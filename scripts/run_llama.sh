@@ -211,7 +211,7 @@ EOT
 MULTINODE_CMD=""
 if [ "$NUM_NODES" -ne "1" -a -f "$HOSTSFILE" ]; then
     MULTINODE_CMD="--hostfile=$HOSTSFILE \
-                   --master_addr $(head -n 1 $HOSTSFILE | sed -n s/[[:space:]]slots.*//p) "
+                   --master_addr $(grep -v '^#' $HOSTSFILE |head -n 1 | sed -n s/[[:space:]]slots.*//p) "
 fi
 
 # training script command
