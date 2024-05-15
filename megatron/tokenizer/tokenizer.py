@@ -7,7 +7,7 @@ from abc import abstractmethod
 
 from .bert_tokenization import FullTokenizer as FullBertTokenizer
 from .gpt2_tokenization import GPT2Tokenizer
-
+from transformers import AutoTokenizer
 
 def build_tokenizer(args):
     """Initialize tokenizer."""
@@ -39,6 +39,9 @@ def build_tokenizer(args):
     elif args.tokenizer_type == 'NullTokenizer':
         assert args.vocab_size is not None
         tokenizer = _NullTokenizer(args.vocab_size)
+    elif args.tokenizer_type == 'HFTokenizer':
+        assert args.tokenizer_model is not None
+        tokenizer = _HFTokenizer(args.tokenizer_model, args.seq_length)
     else:
         raise NotImplementedError('{} tokenizer is not '
                                   'implemented.'.format(args.tokenizer_type))
@@ -534,3 +537,102 @@ class _NullTokenizer:
     @property
     def additional_special_tokens_ids(self):
         return None
+
+class _HFTokenizer(AbstractTokenizer):
+    """HF Tokenizer"""
+    def __init__(self, tokenizer_name_or_path,max_seq_len):
+        name = tokenizer_name_or_path
+        super().__init__(name)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path,padding_side="right",use_fast=False)
+        
+        DEFAULT_PAD_TOKEN = "[PAD]"
+        DEFAULT_EOS_TOKEN = "</s>"
+        DEFAULT_BOS_TOKEN = "<s>"
+        DEFAULT_UNK_TOKEN = "<unk>"
+        special_tokens_dict = dict()
+        if self.tokenizer.pad_token is None:
+            special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
+        if self.tokenizer.eos_token is None:
+            special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
+        if self.tokenizer.bos_token is None:
+            special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
+        if self.tokenizer.unk_token is None:
+            special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+        self.tokenizer.add_special_tokens(special_tokens_dict)
+        # if self.tokenizer.pad_token == None:
+        #     self.tokenizer.pad_token= "[PAD]"
+        self.tokenizer.model_max_length = max_seq_len
+        self.encoder = self.tokenizer.get_vocab()
+        self.decoder = {v: k for k, v in self.encoder.items()}
+
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
+
+    @property
+    def vocab(self):
+        return self.encoder
+
+    @property
+    def inv_vocab(self):
+        return self.decoder
+
+    def tokenize(self, text):
+        return self.tokenizer.encode(text)
+
+    def detokenize(self, token_ids):
+        return self.tokenizer.decode(token_ids)
+
+    @property
+    def bos(self):
+        return self.bos_token_id
+
+    @property
+    def bos_token_id(self):
+        candidate = self.tokenizer.eos_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def cls(self):
+        candidate = self.tokenizer.cls_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def sep(self):
+        candidate = self.tokenizer.sep_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def pad(self):
+        candidate = self.tokenizer.pad_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def eod(self):
+        candidate = self.tokenizer.eos_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def eos(self):
+        return self.eos_token_id
+
+    @property
+    def eos_token_id(self):
+        candidate = self.tokenizer.eos_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def mask(self):
+        candidate = self.tokenizer.mask_token_id
+        return self._check_token_candidate(candidate)
+
+    @property
+    def additional_special_tokens_ids(self):
+        return self.tokenizer.additional_special_tokens_ids
+    
+    @staticmethod
+    def _check_token_candidate(candidate):
+        """Checks whether the candidate is None or not, and raises an exception if it is."""
+        if candidate is None:
+            raise AttributeError("Requested token doesn't exist in current tokenizer")
+        return candidate
