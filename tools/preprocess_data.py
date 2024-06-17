@@ -177,6 +177,10 @@ class Partition(object):
         fin.close()
         builders[key].finalize(output_idx_files[key])
 
+        pool.close()
+        pool.join()
+
+
 
 def get_args():
     parser = argparse.ArgumentParser()
