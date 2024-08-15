@@ -57,9 +57,11 @@ export PYTHONPATH=$MEGATRON_DEEPSPEED_ROOT:$PYTHONPATH
   echo 'root soft nofile  unlimited' >> /etc/security/limits.conf
   echo 'root hard nofile  unlimited' >> /etc/security/limits.conf
   ```
+* To run on multiple nodes, setup a shared directory. This directory should be shared writeable. Samba has a quick guide on how to setup one: https://ubuntu.com/server/docs/samba-as-a-file-server
+* To run on multiple nodes, setup passwordless SSH between the nodes. This guide can be used to setup the same: https://github.com/huggingface/optimum-habana/tree/main/examples/multi-node-training 
 
 ## Dataset Preparation
-Follow the instructions in https://github.com/bigscience-workshop/bigscience/tree/master/data/oscar to download oscar-en full dataset. Note that the dataset takes around 550G of disk space. This dataset is used for training LLaMA & LLaMA 2.
+Follow the instructions in https://github.com/bigscience-workshop/bigscience/tree/master/data/oscar to download oscar-en full dataset. Note that the dataset takes around 550G of disk space. This dataset is used for training LLaMA & LLaMA 2. However, you will need around twice this space to process it.
 ### Dataset Preparation Example
 The below provides the steps required to prepare your dataset. It is based on instructions in https://github.com/bigscience-workshop/bigscience/tree/master/data/oscar.  The dataset in the example is intended to be `zh`
 ### Step 0 :
@@ -145,22 +147,23 @@ Use one of the three methods below to tokenize the dataset. You can use any numb
   ```
 * Update data root dir with the path of your choice:
   ```
-  HL_DATA_DIR_ROOT=/data/bigscience/oscar-en
+  HL_DATA_DIR_ROOT=/data/bigscience/data/oscar/zh
   ```
-* Update data file prefix(*.bin and *.idx) based on file name in data root dir:
+* Update data file prefix(*.bin and *.idx) based on file name in data root dir (`--output-prefix` from Step 3):
   ```
-  HL_DATA_FILE_PREFIX=tokenized_text_document
+  HL_DATA_FILE_PREFIX=zh_tokenized_merged/tokenized_text_document
   ```
-* Update tokenizer.model file path if it is not in data root dir, required for any sentence piece based tokenizer:
+* Update tokenizer.model file path if it is not in data root dir, required for any sentence piece based tokenizer (e.g Not required for `GPT2BPETokenizer` in Step 3):
   ```
   HL_TOKENIZER_MODEL=path/to/tokenizer.model
   ```
-
-Note: For the training commands, make sure to change the IP addresses in hostsfile according to your setup.
-`HL_RESULTS_DIR` and `HL_DATA_DIR_ROOT` must be shared writable across all nodes and launchers when running training on more than 8 cards.
-The same applies to `HL_CHECKPOINTS_DIR`, `HL_TENSORBOARD_DIR` and `HL_KILL_SWITCH` if specified.
-If `HL_DATA_DIR_ROOT` is not writable, then `HL_DATA_CACHE_DIR` must be set to a writable location and
-must be shared and accessible across all nodes and launchers when running training on more than 8 cards.
+* Some additional steps for multinode:
+  * Move the files to the shared directory created previously. Update `HL_DATA_DIR_ROOT` to this path.
+  * Make sure to change the IP addresses in hostsfile according to your setup.
+  * Specify `HL_RESULTS_DIR` as a directory in shared. Alternatively, `$MEGATRON_DEEPSPEED_ROOT` can be in the shared directory.
+* Additional notes  
+  * The multinode instructions applies to `HL_CHECKPOINTS_DIR`, `HL_TENSORBOARD_DIR` and `HL_KILL_SWITCH` if specified.
+  * If `HL_DATA_DIR_ROOT` is not writable, then `HL_DATA_CACHE_DIR` must be set to a writable location and must be shared and accessible across all nodes and launchers when running training on more than 8 cards.
 
 
 # LLaMA Training and Examples
