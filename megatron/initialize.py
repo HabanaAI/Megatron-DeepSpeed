@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Megatron initialization."""
@@ -5,6 +6,7 @@
 import random
 import os
 import time
+import shutil
 
 import numpy as np
 import torch
@@ -17,7 +19,7 @@ from megatron import get_tensorboard_writer
 from megatron.core import mpu, tensor_parallel
 from megatron.arguments import (parse_args, validate_args)
 from megatron.checkpointing import load_args_from_checkpoint
-from megatron.global_vars import set_global_variables
+from megatron.global_vars import set_global_variables, set_args
 from megatron.model.transformer import bias_dropout_add_fused_train
 from megatron.model.fused_bias_gelu import bias_gelu
 from megatron.utils import is_rank_0
@@ -29,12 +31,19 @@ is_rocm_pytorch = OpBuilder.is_rocm_pytorch()
 
 
 def initialize_megatron(extra_args_provider=None, args_defaults={},
-                        ignore_unknown_args=False, allow_no_cuda=False, external_args={}):
+                        ignore_unknown_args=False, allow_no_cuda=False,
+                        external_args={}, allow_parsing=True,
+                        allow_validating_args=True):
     """Set global variables, initialize distributed, and
     set autoresume and random seeds.
     `allow_no_cuda` should not be set unless using megatron for cpu only 
     data processing. In general this arg should not be set unless you know 
     what you are doing.
+    `allow_parsing` set to False when argument parsing done already. In general
+     this arg should not be set to False, unless you know what you are doing.
+    `allow_validating_args` set to False when parsed args need not be validated.
+    In general this arg should not be set to False, unless you know what you
+    are doing.
     Returns a function to finalize distributed env initialization 
     (optionally, only when args.lazy_mpu_init == True)
     """
@@ -42,8 +51,14 @@ def initialize_megatron(extra_args_provider=None, args_defaults={},
         # Make sure cuda is available.
         assert get_accelerator().is_available(), 'Megatron requires accelerator.'
 
-    # Parse arguments
-    args = parse_args(extra_args_provider, ignore_unknown_args)
+    if allow_parsing:
+        # Parse arguments
+        args = parse_args(extra_args_provider, ignore_unknown_args)
+    else:
+        # arguments parsed already and set
+        args = get_args()
+        # reset it so that below set_global_variables doesn't assert
+        set_args(None)
 
     for key in external_args:
         if key in args:
@@ -53,11 +68,18 @@ def initialize_megatron(extra_args_provider=None, args_defaults={},
         assert args.load is not None, '--use-checkpoints-args requires --load argument'
         load_args_from_checkpoint(args)
 
-    validate_args(args, args_defaults)
+    if allow_validating_args:
+        # validate parsed arguments
+        validate_args(args, args_defaults)
 
     # set global args, build tokenizer, and set adlr-autoresume,
     # tensorboard-writer, and timers.
     set_global_variables(args)
+
+    # profiler config, must be done before hpu initialization
+    if args.profile == 'hltv':
+        os.environ['HABANA_PROFILE'] = 'profile_api_with_nics'
+        shutil.rmtree('.graph_dumps', ignore_errors=True)
 
     # torch.distributed initialization
     def finish_mpu_init():

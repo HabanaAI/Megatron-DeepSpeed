@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 import argparse
@@ -5,8 +6,10 @@ import os
 import random
 import numpy
 import torch
+import types
 
-import mpu
+from megatron.core import mpu
+from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from deepspeed.accelerator import get_accelerator
 
 class IdentityLayer(torch.nn.Module):
@@ -23,16 +26,19 @@ def set_random_seed(seed):
     random.seed(seed)
     numpy.random.seed(seed)
     torch.manual_seed(seed)
-    mpu.model_parallel_cuda_manual_seed(seed)
+    model_parallel_cuda_manual_seed(seed)
 
 
-def initialize_distributed(backend='nccl'):
+def initialize_distributed():
     """Initialize torch.distributed."""
+    if torch.distributed.is_initialized():
+        return
     # Get local rank in case it is provided.
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_rank', type=int, default=None,
                         help='local rank passed from distributed launcher')
-    args = parser.parse_args()
+    # args = parser.parse_args()
+    args = parser.parse_known_args()[0]
     local_rank = args.local_rank
 
     # Get rank and world size.
@@ -54,7 +60,7 @@ def initialize_distributed(backend='nccl'):
     master_port = os.getenv('MASTER_PORT', '6000')
     init_method += master_ip + ':' + master_port
     torch.distributed.init_process_group(
-        backend=backend,
+        backend=get_accelerator().communication_backend_name(),
         world_size=world_size,
         rank=rank,
         init_method=init_method)

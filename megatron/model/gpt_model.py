@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 """GPT-2 model."""
@@ -347,6 +348,7 @@ class GPTModelPipe(PipelineModule,MegatronModule):
                                         args.max_position_embeddings,
                                         args.hidden_dropout,
                                         config,
+                                        add_position_embedding=args.add_position_embedding,
                                         num_tokentypes=num_tokentypes,
                                         embedding_weights_in_fp32=args.embedding_weights_in_fp32,))
         else:
@@ -357,6 +359,7 @@ class GPTModelPipe(PipelineModule,MegatronModule):
                                             args.max_position_embeddings,
                                             args.hidden_dropout,
                                             config,
+                                            add_position_embedding=args.add_position_embedding,
                                             num_tokentypes=num_tokentypes,
                                             embedding_weights_in_fp32=args.embedding_weights_in_fp32,
                                             tied_weight_attr='word_embeddings_weight'))
@@ -393,9 +396,13 @@ class GPTModelPipe(PipelineModule,MegatronModule):
         if args.normalization == 'layernorm':
             self.specs.append(LayerSpec(LayerNorm,
                           args.hidden_size,
-                          eps=args.layernorm_epsilon))
+                          eps=args.layernorm_epsilon,
+                          sequence_parallel=args.sequence_parallel,
+                          apply_layernorm_1p=args.apply_layernorm_1p))
         else:
-            self.specs.append(LayerSpec(RMSNorm, args.hidden_size, args.layernorm_epsilon))
+            self.specs.append(LayerSpec(RMSNorm, args.hidden_size,
+                                        args.layernorm_epsilon,
+                                        sequence_parallel=args.sequence_parallel))
 
         def _logits_helper(embedding, lm_output):
             """A wrapper to massage inputs/outputs from pipeline. """
@@ -404,8 +411,9 @@ class GPTModelPipe(PipelineModule,MegatronModule):
                 embedding.word_embeddings_weight,
                 self.parallel_output)
         if args.untie_embeddings_and_output_weights:
+            gather_output = not parallel_output
             self.specs.append(
-                LayerSpec(LMHeadPipe, args.hidden_size, args.padded_vocab_size, config)
+                LayerSpec(LMHeadPipe, args.hidden_size, args.padded_vocab_size, config, gather_output)
             )
         else:
             self.specs.append(
@@ -416,6 +424,7 @@ class GPTModelPipe(PipelineModule,MegatronModule):
                               args.max_position_embeddings,
                               args.hidden_dropout,
                               config,
+                              add_position_embedding=(args.add_position_embedding and (not args.fix_position_emb_redundant_alloc)),
                               num_tokentypes=num_tokentypes,
                               embedding_weights_in_fp32=args.embedding_weights_in_fp32,
                               forward_fn=_logits_helper,
@@ -431,6 +440,8 @@ class GPTModelPipe(PipelineModule,MegatronModule):
         self.last_lm_loss = None    # detached, for display only
         self.last_moe_loss = None   # detached, for display only
 
+        # for selective -> use --recompute-granularity='selective'
+        # for full -> use --recompute-granularity='full' --recompute-method='uniform'
         if args.checkpoint_activations:
             interval = args.checkpoint_num_layers
         elif args.recompute_granularity == "full" and args.recompute_method == 'uniform':
@@ -444,10 +455,16 @@ class GPTModelPipe(PipelineModule,MegatronModule):
                                              num_mp=mpu.get_tensor_model_parallel_world_size(),
                                              num_dp=mpu.get_data_parallel_world_size())
 
+        if config.pytorch_activation_checkpointing:
+            from torch.utils.checkpoint import checkpoint
+            interval = args.recompute_num_layers
+        else:
+            from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
         super().__init__(layers=self.specs,
                          loss_fn=self.loss_func,
                          topology=topo,
                          activation_checkpoint_interval=interval,
+                         activation_checkpoint_func=checkpoint,
                          partition_method='type:transformer')
 
     def _calculate_moe_loss(self, inputs):
@@ -470,6 +487,8 @@ class GPTModelPipe(PipelineModule,MegatronModule):
         return UniversalCheckpointInfo(using_model_pipe=True).get()
 
     def get_additional_losses(self):
+        if get_args().inference:
+            return None
         if not self.is_moe_model:
             return None
         return OrderedDict({

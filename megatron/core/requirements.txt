@@ -1,3 +1,10 @@
 pybind11
 torch
 regex
+einops
+datasets==2.21.0
+sentencepiece
+transformers
+nltk
+git+https://github.com/EleutherAI/lm-evaluation-harness.git@master
+git+https://github.com/meta-llama/llama3

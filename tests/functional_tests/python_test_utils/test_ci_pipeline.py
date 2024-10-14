@@ -6,7 +6,7 @@ import glob
 from tensorboard.backend.event_processing import event_accumulator
 
 LOGS_DIR = os.getenv('LOGS_DIR')
-EXPECTED_METRICS_FILE = os.getenv('EXPECTED_METRICS_FILE')
+EXPECTED_METRICS_FILE = os.getenv('EXPECTED_METRICS_FILE', "")
 
 import enum
 

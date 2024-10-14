@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 #!/bin/bash
 DIR=`pwd`
 ###############################################################################
@@ -119,8 +121,14 @@ MP_SIZE=1
 ## Currently we don't support PP for MoE. To disable PP, set PP_SIZE
 ## to 1 and use the "--no-pipeline-parallel" arg.
 PP_SIZE=1
-NUM_GPUS=$(($(ds_ssh nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)-2))
-NUM_GPUS_PERNODE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+nvidia-smi || count_GPU=0
+if [[ ${count_GPU} == 0 ]];then
+    NUM_GPUS=$(lspci | grep -i "Processing accelerators: Habana Labs Ltd." | wc -l)
+    NUM_GPUS_PERNODE=${NUM_GPUS}
+else
+    NUM_GPUS=$(($(ds_ssh nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)-2))
+    NUM_GPUS_PERNODE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+fi
 NUM_NODE=$(( ${NUM_GPUS} / ${NUM_GPUS_PERNODE} ))
 ###############################################################################
 ### MoE configs
@@ -172,6 +180,7 @@ LOG_INTERVAL=10
 EVAL_ITERS=10
 EVAL_INTERVAL=100
 SAVE_INTERVAL=10000
+EXIT_INTERVAL=${HL_EXIT_INTERVAL:-0}
 
 ## Standard deviation for weight initialization
 ## We used 0.014 for 350M/1.3B dense/MoE models, and used 0.01 for 6.7B
@@ -241,13 +250,17 @@ if [ "${USE_INTERNAL_DATA}" = "true" ]; then
     0.00208 ${NIH} 0.13017 ${CC2020} 0.09446 ${PCC} 0.15652 ${CC2021} \
     0.01359 ${ARX} 0.01588 ${GIT}"
 else
-    VOCAB_PATH=/data/the_pile_public_merged_nopreprocessing/gpt2-vocab.json
-    MERGE_PATH=/data/the_pile_public_merged_nopreprocessing/gpt2-merges.txt
+    #VOCAB_PATH=/data/the_pile_public_merged_nopreprocessing/gpt2-vocab.json
+    #MERGE_PATH=/data/the_pile_public_merged_nopreprocessing/gpt2-merges.txt
     # Public the Pile dataset, can be downloaded at https://mystic.the-eye.eu/public/AI/pile_neox/
     # For cluster Azure-EastUS-V100-32GB-4, Lab-RR1-V100
-    DATA_PATH=/vc_data_blob/users/conglli/the_pile_public_merged_nopreprocessing/pile_text_document
+    #DATA_PATH=/vc_data_blob/users/conglli/the_pile_public_merged_nopreprocessing/pile_text_document
     # For cluster Azure-WestUS3-A100
     # DATA_PATH=/blob/data/the_pile_public_merged_nopreprocessing/pile_text_document
+    BASE_DATA_PATH=${HL_DATA_DIR_ROOT:-/data/bigscience/oscar-en/}
+    VOCAB_PATH=${BASE_DATA_PATH}/gpt2-vocab.json
+    MERGE_PATH=${BASE_DATA_PATH}/gpt2-merges.txt
+    DATA_PATH=${BASE_DATA_PATH}/meg-gpt2_text_document
 fi
 ###############################################################################
 data_options=" \
@@ -284,6 +297,7 @@ megatron_options=" \
         --min-lr ${MIN_LR} \
         --lr-decay-style cosine \
         --split 98,2,0 \
+        --exit-interval ${EXIT_INTERVAL} \
         --log-interval ${LOG_INTERVAL} \
         --eval-interval ${EVAL_INTERVAL} \
         --eval-iters ${EVAL_ITERS} \
@@ -299,11 +313,12 @@ megatron_options=" \
         --log-timers-to-tensorboard \
         --log-batch-size-to-tensorboard \
         --log-validation-ppl-to-tensorboard \
+        --no-gradient-accumulation-fusion \
         --tensorboard-dir ${TENSORBOARD_DIR}"
 
 if [ "${ACTIVATION_CHECKPOINT}" = "true" ]; then
 megatron_options="${megatron_options} \
-        --checkpoint-activations"
+        --checkpoint-activations --recompute-granularity=full --recompute-method=uniform"
 fi
 
 if [[ $EP_SIZE -gt 1 ]]; then
@@ -329,12 +344,12 @@ sed "s/CONFIG_BATCH_SIZE/${GLOBAL_BATCH_SIZE}/" ${template_json} \
     | sed "s/CONFIG_CL_MIN/${CL_START_SEQLEN}/" \
     | sed "s/CONFIG_CL_MAX/${SEQ_LEN}/" \
     | sed "s/CONFIG_CL_DURATION/${CL_STEP}/" \
-	  > ${config_json}
+        > ${config_json}
 
 deepspeed_options=" \
-		    --deepspeed \
-		    --deepspeed_config ${config_json} \
-		    --pipeline-model-parallel-size ${PP_SIZE}"
+            --deepspeed \
+            --deepspeed_config ${config_json} \
+            --pipeline-model-parallel-size ${PP_SIZE}"
 
 # Currently MoE is not compatible with pipeline parallel
 if [[ $EP_SIZE -gt 1 ]]; then

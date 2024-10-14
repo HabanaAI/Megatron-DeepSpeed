@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 """Transformer based language model."""
@@ -141,6 +142,7 @@ class Embedding(MegatronModule):
                  max_sequence_length,
                  embedding_dropout_prob,
                  config,
+                 add_position_embedding=True,
                  num_tokentypes=0,
                  embedding_weights_in_fp32=False):
         super(Embedding, self).__init__()
@@ -149,7 +151,7 @@ class Embedding(MegatronModule):
         self.init_method = config.init_method
         self.num_tokentypes = num_tokentypes
 
-        args = get_args()
+        args = self._args = get_args()
 
         # Word embeddings (parallel).
         self.embedding_weights_in_fp32 = embedding_weights_in_fp32
@@ -159,7 +161,7 @@ class Embedding(MegatronModule):
         self._word_embeddings_key = 'word_embeddings'
 
         # Position embedding (serial).
-        self.add_position_embedding = args.add_position_embedding
+        self.add_position_embedding = add_position_embedding
         if self.add_position_embedding:
             self._position_embeddings_key = 'position_embeddings'
             if args.sequence_parallel:
@@ -224,7 +226,8 @@ class Embedding(MegatronModule):
         self.tokentype_embeddings = torch.nn.Embedding(num_tokentypes,
                                                        self.hidden_size)
         # Initialize the token-type embeddings.
-        args = get_args()
+        if not hasattr(self, '_args'):
+            self._args = get_args()
         self.init_method(self.tokentype_embeddings.weight)
 
     def forward(self, input_ids, position_ids, tokentype_ids=None):
@@ -256,8 +259,8 @@ class Embedding(MegatronModule):
 
         # Dropout.
         if self.sequence_parallel:
-            # already partition sequence, do not need scatter_to_sequence_parallel_region
-            # embeddings = tensor_parallel.scatter_to_sequence_parallel_region(embeddings)
+            # already partition sequence, do not need scatter_to_sequence_parallel_region ?
+            embeddings = tensor_parallel.scatter_to_sequence_parallel_region(embeddings)
             with tensor_parallel.get_cuda_rng_tracker().fork():
                 embeddings = self.embedding_dropout(embeddings)
         else:
@@ -415,6 +418,7 @@ class TransformerLanguageModel(MegatronModule):
                                        args.max_position_embeddings,
                                        args.hidden_dropout,
                                        config,
+                                       args.add_position_embedding,
                                        self.num_tokentypes,
                                        args.embedding_weights_in_fp32)
             self._embedding_key = 'embedding'

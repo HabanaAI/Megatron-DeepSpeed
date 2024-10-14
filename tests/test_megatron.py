@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 import pytest
 import os
 import re
@@ -39,7 +41,7 @@ def params(moe_num_experts, mp_size):
         "--num-experts", moe_num_experts,
         "--mlp-type", "standard",
         "--num-samples", "0",
-        "--fp16",
+        "--bf16",
     ]
 
 

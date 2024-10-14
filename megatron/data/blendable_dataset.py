@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Blendable dataset."""
@@ -24,6 +25,11 @@ class BlendableDataset(torch.utils.data.Dataset):
         assert num_datasets == len(weights)
 
         self.size = size
+
+        if size == -1:
+            self.size = 0
+            for dataset in self.datasets:
+                self.size += len(dataset)
 
         # Normalize weights.
         weights = np.array(weights, dtype=np.float64)

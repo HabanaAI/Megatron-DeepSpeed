@@ -1,38 +1,50 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Dataloaders."""
 
 
+from itertools import chain
 import random
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from megatron import get_args
+from megatron import get_args, get_num_microbatches_by_mode
 from megatron.core import mpu
 from deepspeed.runtime.dataloader import RepeatingLoader
 
 
-def build_pretraining_data_loader(dataset, consumed_samples):
+def build_pretraining_data_loader(dataset, consumed_samples, is_train, use_all_samples=False):
     """Buld dataloader given an input dataset."""
 
     if dataset is None:
         return None
     args = get_args()
+    assert not use_all_samples or args.dataloader_type == 'single', \
+        'consuming whole dataset supported only for "single" dataloader type'
+
+    if is_train:
+        micro_batch_size=args.micro_batch_size
+    else:
+        micro_batch_size=args.eval_micro_batch_size
 
     # Megatron sampler
     if args.dataloader_type == 'single':
         batch_sampler = MegatronPretrainingSampler(
             total_samples=len(dataset),
             consumed_samples=consumed_samples,
-            micro_batch_size=args.micro_batch_size,
+            micro_batch_size=micro_batch_size,
             data_parallel_rank=mpu.get_data_parallel_rank(),
-            data_parallel_size=mpu.get_data_parallel_world_size())
+            data_parallel_size=mpu.get_data_parallel_world_size(),
+            is_train=is_train,
+            drop_last=not use_all_samples,
+            pad_negative_indices=use_all_samples)
     elif args.dataloader_type == 'cyclic':
         batch_sampler = MegatronPretrainingRandomSampler(
             dataset,
             total_samples=len(dataset),
             consumed_samples=consumed_samples,
-            micro_batch_size=args.micro_batch_size,
+            micro_batch_size=micro_batch_size,
             data_parallel_rank=mpu.get_data_parallel_rank(),
             data_parallel_size=mpu.get_data_parallel_world_size(),
             data_sharding=args.data_sharding)
@@ -52,7 +64,8 @@ def build_pretraining_data_loader(dataset, consumed_samples):
 class MegatronPretrainingSampler:
 
     def __init__(self, total_samples, consumed_samples, micro_batch_size,
-                 data_parallel_rank, data_parallel_size, drop_last=True):
+                 data_parallel_rank, data_parallel_size, is_train, drop_last=True,
+                 pad_negative_indices=False):
         # Keep a copy of input params for later use.
         self.total_samples = total_samples
         self.consumed_samples = consumed_samples
@@ -61,6 +74,10 @@ class MegatronPretrainingSampler:
         self.micro_batch_times_data_parallel_size = \
             self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last
+        self.global_batch_size = (self.micro_batch_times_data_parallel_size
+                                * get_num_microbatches_by_mode(is_train))
+        self.pad_negative_indices = pad_negative_indices
+        self.is_train = is_train
 
         # Sanity checks.
         assert self.total_samples > 0, \
@@ -85,7 +102,22 @@ class MegatronPretrainingSampler:
     def __iter__(self):
         batch = []
         # Last batch will be dropped if drop_last is not set False
-        for idx in range(self.consumed_samples, self.total_samples):
+        indices = range(self.consumed_samples, self.total_samples)
+        if (not self.drop_last) and self.pad_negative_indices:
+            # TODO: this approach (padding to global_batch_size) is not optimal
+            #  since many batches could by empty (only padding) on all devices.
+            #  This should be fixed by creating a microbatches calculator
+            #  than can be instructed (e.g. with `update_num_microbatches`) to
+            #  use less num_microbatches in last valid iteration.
+            #  The code here will not change except from replacing
+            #  `self.global_batch_size` with
+            #  `self.micro_batch_times_data_parallel_size` Done for Eval.
+            remainder = self.global_batch_size if self.is_train else self.micro_batch_times_data_parallel_size
+            pad_samples_num = -len(indices) % remainder
+            pad_indices = range(-1, -pad_samples_num - 1, -1)
+            indices = chain(indices, pad_indices)
+
+        for idx in indices:
             batch.append(idx)
             if len(batch) == self.micro_batch_times_data_parallel_size:
                 start_idx, end_idx = self.get_start_end_idx()
@@ -94,6 +126,8 @@ class MegatronPretrainingSampler:
 
         # Check the last partial batch and see drop_last is set
         if len(batch) > 0 and not self.drop_last:
+            assert not self.pad_negative_indices, \
+                'with pad_negative_indices all batches should be complete'
             start_idx, end_idx = self.get_start_end_idx()
             yield batch[start_idx:end_idx]
 

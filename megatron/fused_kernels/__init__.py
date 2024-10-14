@@ -1,5 +1,7 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
+from deepspeed.accelerator import get_accelerator
 import os
 import pathlib
 import subprocess
@@ -16,6 +18,8 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = ""
 
 
 def load(args):
+    if get_accelerator().device_name() != "cuda":
+        return
 
     # Check if cuda 11 is installed for compute capability 8.0
     cc_flag = []

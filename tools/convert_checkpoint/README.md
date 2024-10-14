@@ -6,8 +6,9 @@ The folder also contains scripts for inspecting checkpoint files and folders, wh
 
 Here are the list and details of checkpoint conversions provided by the available scripts:
 
-1. [Megatron-DeepSpeed to Megatron-LM](#Megatron-DeepSpeed-to-Megatron)
-1. [Megatron-DeepSpeed to HF Transformers](#Megatron-DeepSpeed-to-HF-Transformers)
+1. [Megatron-DeepSpeed to Megatron-LM](#megatron-deepspeed-to-megatron)
+2. [Megatron-DeepSpeed to HF Transformers](#megatron-deepspeed-to-hf-transformers)
+3. [Megatron-DeepSpeed to universal then to HF Transformers](#megatron-deepspeed-to-universal-then-to-hf-transformers)
 
 
 ## Megatron-DeepSpeed to Megatron
@@ -76,3 +77,16 @@ cd /hf/transformers
 python src/transformers/models/megatron_gpt2/convert_megatron_gpt2_checkpoint.py \
 /path/to/Megatron/checkpoint/iter_0097500/mp_rank_00/model_optim_rng.pt
 ```
+
+## Megatron-DeepSpeed to Universal then to HF Transformers
+
+The conversion is done in two steps, Megatron-DeepSpeed to Universal and then Universal to HF Transformers:
+
+```bash
+# 1. Megatron-DeepSpeed to Universal
+HL_LATEST_CHECKPOINT=/path/to/checkpoints/global_step*/ $MEGATRON_DEEPSPEED_ROOT/scripts/convert_ds_to_universal.sh
+
+# 2. Universal to HF Transformers
+python $MEGATRON_DEEPSPEED_ROOT/tools/convert_checkpoint/mds_universal_to_huggingface.py --output-dir /path/to/output/dir --hf-out-format safetensors --universal-dir /path/to/universal/dir/ --model-type llama --config $MEGATRON_DEEPSPEED_ROOT/tools/convert_checkpoint/json/mds_to_hf_llama_7b.json
+'''
+Note: Validated on LLaMA 2 - 7B and 70B models.

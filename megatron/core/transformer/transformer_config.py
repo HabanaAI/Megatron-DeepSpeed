@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 from dataclasses import dataclass
@@ -75,6 +76,8 @@ class TransformerConfig(ModelParallelConfig):
                                    This kernel only supports a fixed set of hidden sizes.
                                    Defaults to False.
         bias_dropout_fusion (bool): If true, uses bias dropout fusion.
+        use_fused_sdpa (bool): If true, use Fused Scaled Dot Product Attention.
+        use_fused_sdpa_with_recompute (bool): If true, use Fused Scaled Dot Product Attention with recompute feature.
 
         # activation recomputation
 
@@ -137,12 +140,17 @@ class TransformerConfig(ModelParallelConfig):
     masked_softmax_fusion: bool = False
     persist_layer_norm: bool = False
     bias_dropout_fusion: bool = False  # TODO: this should be bias_dropout_add_fusion?
+    use_fused_sdpa: bool = True
+    use_fused_sdpa_with_recompute: bool = False
 
     # activation recomputation
     recompute_granularity: str = None
     recompute_method: str = None
     recompute_num_layers: int = None
     distribute_saved_activations: bool = None
+
+    # checkpoint activation function
+    pytorch_activation_checkpointing: bool = False
 
     def __post_init__(self):
         """ Python dataclass method that is used to modify attributes after initialization.
@@ -166,18 +174,14 @@ class TransformerConfig(ModelParallelConfig):
             self.attention_softmax_in_fp32 = True
 
         if self.recompute_granularity is not None:
-            if not self.recompute_granularity in ['full', 'selective']:
+            if not self.recompute_granularity in ['full', 'selective', 'mlp']:
                 raise ValueError(
-                    f'When using recompute_granuarlity: {self.recompute_granularity} must be "full" or "selective".'
+                    f'When using recompute_granuarlity: {self.recompute_granularity} must be "full", "selective" or "mlp".'
                 )
 
-            if self.recompute_method is not None:
+            if self.recompute_granularity == 'full':
                 if not self.recompute_method in ['block', 'uniform']:
                     raise ValueError(f'recompute_method: {self.recompute_method} must be "block" or "uniform".')
-            elif self.recompute_granularity != 'selective':
-                raise ValueError(
-                    f'Using recompute_granularity: {self.recompute_granularity} so recompute_method must be "block" or "uniform"'
-                )
 
             if self.recompute_num_layers is None:
                 raise ValueError(

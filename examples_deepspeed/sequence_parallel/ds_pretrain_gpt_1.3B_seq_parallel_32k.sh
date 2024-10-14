@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 #!/bin/bash
 dir=`pwd`
 ###############################################################################
@@ -147,8 +149,14 @@ no_pp="true"
 zero_stage=1
 
 ## Total number of GPUs. ds_ssh is from DeepSpeed library.
-num_gpus=$(($(ds_ssh nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)-2))
-num_gpus_pernode=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+nvidia-smi || count_GPU=0
+if [[ ${count_GPU} == 0 ]];then
+    num_gpus=$(lspci | grep -i "Processing accelerators: Habana Labs Ltd." | wc -l)
+    num_gpus_pernode=${num_gpus}
+else
+    num_gpus=$(($(ds_ssh nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)-2))
+    num_gpus_pernode=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+fi
 num_node=$(( ${num_gpus} / ${num_gpus_pernode} ))
 
 ## Data parallel size.
@@ -187,21 +195,28 @@ host="${HOSTNAME}"
 seed=1234
 num_workers=0
 
-data_path="BookCorpusDataset_text_document"
-if [ ! -f "BookCorpusDataset_text_document.bin" ]; then
-    wget https://the-eye.eu/public/AI/pile_neox/data/BookCorpusDataset_text_document.bin
-fi
-if [ ! -f "BookCorpusDataset_text_document.idx" ]; then
-    wget https://the-eye.eu/public/AI/pile_neox/data/BookCorpusDataset_text_document.idx
-fi
-
-vocab_path="gpt2-vocab.json"
-if [ ! -f "$vocab_path" ]; then
-    wget https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-vocab.json
-fi
-merge_path="gpt2-merges.txt"
-if [ ! -f "$merge_path" ]; then
-    wget https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-merges.txt
+USE_INTERNAL_DATA="false"
+if [ "${USE_INTERNAL_DATA}" = "true" ]; then
+    data_path="BookCorpusDataset_text_document"
+    if [ ! -f "BookCorpusDataset_text_document.bin" ]; then
+        wget https://the-eye.eu/public/AI/pile_neox/data/BookCorpusDataset_text_document.bin
+    fi
+    if [ ! -f "BookCorpusDataset_text_document.idx" ]; then
+        wget https://the-eye.eu/public/AI/pile_neox/data/BookCorpusDataset_text_document.idx
+    fi
+    vocab_path="gpt2-vocab.json"
+    if [ ! -f "$vocab_path" ]; then
+        wget https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-vocab.json
+    fi
+    merge_path="gpt2-merges.txt"
+    if [ ! -f "$merge_path" ]; then
+        wget https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-merges.txt
+    fi
+else
+    BASE_DATA_PATH=${HL_DATA_DIR_ROOT:-/data/bigscience/oscar-en/}
+    data_path=${BASE_DATA_PATH}/meg-gpt2_text_document
+    vocab_path=${BASE_DATA_PATH}/gpt2-vocab.json
+    merge_path=${BASE_DATA_PATH}/gpt2-merges.txt
 fi
 
 prescale_grad="true"
@@ -282,11 +297,12 @@ megatron_options=" \
     --log-timers-to-tensorboard \
     --log-batch-size-to-tensorboard \
     --log-validation-ppl-to-tensorboard \
+    --no-gradient-accumulation-fusion \
     --tensorboard-dir ${tensorboard_path}"
 
 if [ "${activation_checkpoint}" = "true" ]; then
 megatron_options="${megatron_options} \
-    --checkpoint-activations"
+    --checkpoint-activations --recompute-granularity=full --recompute-method=uniform"
 fi
 
 if [ "${log_optimizer_state}" = "true" ]; then

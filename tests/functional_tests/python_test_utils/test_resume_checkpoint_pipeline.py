@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 import os
 import sys
 import json
@@ -34,8 +36,9 @@ def collect_train_test_metrics(logs_dir, index):
 
 class TestCIPipeline:
 
-    train_metrics_100 = collect_train_test_metrics(LOGS_DIR, 0)
-    train_metrics_50_to_100 = collect_train_test_metrics(LOGS_DIR, 1)
+    if LOGS_DIR:
+        train_metrics_100 = collect_train_test_metrics(LOGS_DIR, 0)
+        train_metrics_50_to_100 = collect_train_test_metrics(LOGS_DIR, 1)
 
     def _test_helper(self, loss_type):
         expected = self.train_metrics_100[loss_type]
@@ -52,4 +55,5 @@ class TestCIPipeline:
             assert actual[i] == expected[start_idx_expected + i], f"The value at step {i} should be {expected[start_idx_expected + i]} but it is {actual[i]}."
 
     def test_lm_loss_deterministic(self):
-        self._test_helper("lm loss")
+        if LOGS_DIR:
+            self._test_helper("lm loss")

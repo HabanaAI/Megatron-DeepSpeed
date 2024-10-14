@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Main tasks functionality."""
@@ -50,10 +51,6 @@ def get_tasks_args(parser):
                        help='Number of blocks to use as top-k during retrieval')
 
     # finetune for retriever
-    group.add_argument('--eval-micro-batch-size', type=int, default=None,
-                       help='Eval Batch size per model instance (local batch '
-                            'size). Global batch size is local batch size '
-                            'times data parallel size.')
     group.add_argument('--train-with-neg', action='store_true',
                        help='Whether to use negative examples during model '
                         'training')
@@ -71,6 +68,10 @@ def get_tasks_args(parser):
                         help='Av.rank validation: how many other negatives to'
                         ' take from each question pool')
 
+
+    # checkpoint manipulations
+    group.add_argument('--checkpoint-override-tokenizer', action='store_true',
+                       help='If set, override checkpoint tokenizer information with current args')
 
     return parser
 

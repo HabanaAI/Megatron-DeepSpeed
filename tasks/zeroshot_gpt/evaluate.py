@@ -1,7 +1,9 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """GPT zero-shot evaluation."""
 
+import functools
 import math
 
 import torch
@@ -24,6 +26,8 @@ from .datasets import build_dataset
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from megatron.model import DistributedDataParallel as LocalDDP
 from megatron.model import Float16Module
+from tasks.ckp_utils import load_ds_model
+
 
 def get_model_provider(eval_metric):
     """Based on evaluation metric set the parallel-output flag and
@@ -61,7 +65,7 @@ def process_batch(batch):
     labels = tokens_[:, 1:].contiguous()
     tokens = tokens_[:, :-1].contiguous()
 
-    # Get the masks and postition ids.
+    # Get the masks and position ids.
     attention_mask, _, position_ids = get_ltor_masks_and_position_ids(
         tokens,
         tokenizer.eod,
@@ -70,6 +74,33 @@ def process_batch(batch):
         args.eod_mask_loss)
 
     return tokens, labels, attention_mask, position_ids, loss_mask
+
+
+def calculate_metric(output, labels, loss_mask, eval_metric):
+    # For loss, return the unreduced loss.
+    if eval_metric == 'loss':
+        if output.shape != labels.shape:
+            labels = labels.transpose(0, 1)
+        losses = tensor_parallel.vocab_parallel_cross_entropy(
+            output.contiguous().float(), labels.contiguous())
+        if losses.shape != loss_mask.shape:
+            losses = losses.transpose(0, 1).contiguous()
+        loss = torch.sum(
+            losses.view(-1) * loss_mask.contiguous().view(-1).float())
+        return loss
+
+    # For accuracy, return the number of correctly predicted samples.
+    if eval_metric == 'accuracy':
+        outputs = torch.argmax(output, -1)
+        if outputs.shape != labels.shape:
+            outputs = outputs.transpose(0, 1).contiguous()
+        correct = (outputs == labels).float()
+        correct[(1 - loss_mask).bool()] = 1
+        correct = correct.prod(-1)
+        return correct.sum()
+
+    raise NotImplementedError('calculate_metric method for evaluation metric {} '
+                                'is not implemented.'.format(eval_metric))
 
 
 def forward_step(batch, model, eval_metric):
@@ -94,25 +125,84 @@ def forward_step(batch, model, eval_metric):
     send_forward(output)
 
     if parallel_state.is_pipeline_last_stage():
-        # For loss, return the unreduced loss.
-        if eval_metric == 'loss':
-            losses = tensor_parallel.vocab_parallel_cross_entropy(
-                output.contiguous().float(), labels.contiguous())
-            loss = torch.sum(
-                losses.view(-1) * loss_mask.contiguous().view(-1).float())
-            return loss
-
-        # For accuracy, return the number of correctly predicted samples.
-        if eval_metric == 'accuracy':
-            outputs = torch.argmax(output, -1)
-            correct = (outputs == labels).float()
-            correct[(1 - loss_mask).bool()] = 1
-            correct = correct.prod(-1)
-            return correct.sum()
-
-        raise NotImplementedError('forward method for evaluation metric {} '
-                                  'is not implemented.'.format(eval_metric))
+        return calculate_metric(output, labels, loss_mask, eval_metric)
     return None
+
+
+class PeekableIterator:
+    def __init__(self, iterator):
+        self.iterator = iterator
+        self.next_item = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.next_item is not None:
+            item = self.next_item
+            self.next_item = None
+            return item
+        else:
+            return next(self.iterator)
+
+    def peek(self):
+        if self.next_item is None:
+            self.next_item = next(self.iterator)
+        return self.next_item
+
+
+def evaluate_3d(loader, model, eval_metric, do_print):
+    args = get_args()
+
+    total_iters = len(loader)
+    peekable_loader = PeekableIterator(iter(loader))
+
+    dp_world_size = parallel_state.get_data_parallel_world_size()
+
+    total_output, total_tokens = 0.0, 0
+    last_batch_size = loader.batch_size
+    for i in range(total_iters):
+        batch = peekable_loader.peek()
+
+        # We create the data_loader with drop_last=False
+        # This can cause the last batch to be smaller than loader.batch_size
+        # However, Megatron caches the size of the batch
+        # Therefore, we detect that the current batch size has changed and reset the cache
+        # In addition, Pipeline model engine calculates total_loss aggregated over micro batches.
+        # However, total_loss has no meaning for eval, yet being calculated.
+        # Reset total_loss to avoid above similar batch size issue
+        batch_size = batch['text'].shape[0]
+        if batch_size != last_batch_size:
+            model.reset_activation_shape()
+            tensor_parallel.data.reset_cached_broadcast_sizes()
+            model.total_loss = None
+            last_batch_size = batch_size
+
+        output = model.eval_batch(peekable_loader, compute_loss=False, reduce_output=None)
+
+        # output logits are available only on last stage pipeline workers
+        if parallel_state.is_pipeline_last_stage():
+            output = torch.cat(output)
+
+            _, labels, _, _, loss_mask = process_batch(batch)
+
+            res = calculate_metric(output, labels, loss_mask, eval_metric)
+            total_output += res
+            total_tokens += loss_mask.view(-1).eq(1).sum()
+
+            # Average loss across DP
+            # HCCL does not support torch.distributed.ReduceOp.AVG
+            torch.distributed.all_reduce(total_output,
+                                         group=parallel_state.get_data_parallel_group(),
+                                         op=torch.distributed.ReduceOp.SUM)
+            total_output = total_output / dp_world_size
+
+            if do_print and (i+1) % args.log_interval == 0:
+                avg_metric = total_output / total_tokens
+                print(f'Iteration: {i+1}: avg_{eval_metric}={avg_metric}')
+
+    loss = total_output * dp_world_size
+    return loss
 
 
 def evaluate(data_loader, model, eval_metric):
@@ -141,14 +231,22 @@ def evaluate(data_loader, model, eval_metric):
     return total_output
 
 
-def evaluate_and_print_results(task, data_loader, model, eval_metric):
+def evaluate_and_print_results(task, data_loader, model, eval_metric, using_3d):
     """Evaluate and print results on screen."""
 
     # Evaluate and get results.
-    output = evaluate(data_loader, model, eval_metric)
+    if using_3d:
+        # only a single last stage worker will print
+        do_print = parallel_state.is_pipeline_last_stage() \
+                   and (parallel_state.get_data_parallel_rank() == 0) \
+                   and (parallel_state.get_tensor_model_parallel_rank() == 0)
+        output = evaluate_3d(data_loader, model, eval_metric, do_print)
+    else:
+        do_print = is_last_rank()
+        output = evaluate(data_loader, model, eval_metric)
 
     string = ' validation results on {} | '.format(task)
-    if is_last_rank():
+    if do_print:
         if eval_metric == 'loss':
             num_tokenized_tokens = data_loader.dataset.num_tokenized_tokens
             num_original_tokens = data_loader.dataset.num_original_tokens
@@ -195,12 +293,15 @@ def main():
             args.task))
 
     # Set up model and load checkpoint.
-    model = get_model(get_model_provider(eval_metric), wrap_with_ddp=False)
+    if args.deepspeed:
+        parallel_output = (eval_metric == 'loss')
+        model = load_ds_model(parallel_output=parallel_output)
+    else:
+        model = get_model(get_model_provider(eval_metric), wrap_with_ddp=False)
+        assert len(model) == 1, "Above condition should have caught this"
+        model = model[0]
     if args.load is not None:
         _ = load_checkpoint(model, None, None)
-
-    assert len(model) == 1, "Above condition should have caught this"
-    model = model[0]
 
     # Data stuff.
     dataset = build_dataset(args.task)
@@ -208,6 +309,6 @@ def main():
                                    args.num_workers, drop_last=False)
 
     # Run evaluation.
-    evaluate_and_print_results(args.task, dataloader, model, eval_metric)
+    evaluate_and_print_results(args.task, dataloader, model, eval_metric, using_3d=args.deepspeed)
 
     print_rank_0('done :-)')

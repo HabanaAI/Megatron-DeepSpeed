@@ -1,10 +1,13 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
-from commons import print_separator
-from commons import initialize_distributed
+from .commons import print_separator
+from .commons import initialize_distributed
 from deepspeed.accelerator import get_accelerator
-from mpu import data as data_utils
-import mpu
+from megatron.core import mpu
+from megatron.core.tensor_parallel import data as data_utils
+import os
+import pytest
 import torch
 import functools
 import operator
@@ -12,8 +15,14 @@ import sys
 sys.path.append("../..")
 
 
+@pytest.fixture
+def tensor_model_parallel_size():
+    return int(os.getenv("WORLD_SIZE", '1'))
+
+
 def test_broadcast_data(tensor_model_parallel_size):
 
+    initialize_distributed()
     if torch.distributed.get_rank() == 0:
         print('> testing broadcast_data with model parallel size {} ...'.
               format(tensor_model_parallel_size))
@@ -57,7 +66,7 @@ def test_broadcast_data(tensor_model_parallel_size):
         assert data_b[key].sub(tensor).abs().max() == 0
 
     # Reset groups
-    mpu.destroy_tensor_model_parallel()
+    mpu.destroy_model_parallel()
 
     torch.distributed.barrier()
     if torch.distributed.get_rank() == 0:

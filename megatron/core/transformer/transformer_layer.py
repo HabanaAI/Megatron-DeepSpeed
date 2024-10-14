@@ -1,5 +1,7 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
+from deepspeed.accelerator import get_accelerator
 import torch
 
 from megatron.core.transformer.module import MegatronModule
@@ -9,7 +11,9 @@ from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.mlp import MLP
 from megatron.core.utils import make_viewless_tensor
-from megatron.core.transformer.custom_layers.transformer_engine import TELayerNorm
+
+if get_accelerator().device_name() == "cuda":
+    from megatron.core.transformer.custom_layers.transformer_engine import TELayerNorm
 
 class TransformerLayer(MegatronModule):
     """A single transformer layer.

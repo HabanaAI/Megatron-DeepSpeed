@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 import torch
@@ -9,6 +10,13 @@ from megatron.core.parallel_state import (
 )
 from .utils import split_tensor_along_last_dim
 from deepspeed.accelerator import get_accelerator
+
+
+def get_async_op():
+    async_op = False
+    if get_accelerator().device_name() == "hpu":
+        async_op = True
+    return async_op
 
 
 def _reduce(input_):
@@ -79,7 +87,7 @@ def _gather_along_last_dim(input_):
 
     tensor_list = [torch.empty_like(input_) for _ in range(world_size)]
     tensor_list[rank] = input_
-    torch.distributed.all_gather(tensor_list, input_, group=get_tensor_model_parallel_group())
+    torch.distributed.all_gather(tensor_list, input_, group=get_tensor_model_parallel_group(), async_op=get_async_op())
 
     # Note: torch.cat already creates a contiguous tensor.
     output = torch.cat(tensor_list, dim=last_dim).contiguous()
@@ -101,7 +109,8 @@ def _gather_along_first_dim(input_):
     output = torch.empty(dim_size, dtype=input_.dtype,
                          device=get_accelerator().current_device_name())
     torch.distributed._all_gather_base(output, input_.contiguous(),
-                                       group=get_tensor_model_parallel_group())
+                                       group=get_tensor_model_parallel_group(),
+                                       async_op=get_async_op())
 
     return output
 
@@ -121,7 +130,8 @@ def _reduce_scatter_along_first_dim(input_):
     output = torch.empty(dim_size, dtype=input_.dtype,
                          device=get_accelerator().current_device_name())
     torch.distributed._reduce_scatter_base(output, input_.contiguous(), 
-                                           group=get_tensor_model_parallel_group())
+                                           group=get_tensor_model_parallel_group(),
+                                           async_op=get_async_op())
     return output
 
 

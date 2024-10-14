@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 import pytest
@@ -5,8 +6,11 @@ import pytest
 import torch
 
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.parallel_transformer_layer import ParallelTransformerLayer
-from megatron.core.transformer.parallel_transformer_block import ParallelTransformerBlock
+from megatron.model.transformer import ParallelTransformerLayer
+try:
+    from megatron.core.transformer.parallel_transformer_block import ParallelTransformerBlock
+except:
+    ParallelTransformerBlock = None
 
 
 @pytest.fixture

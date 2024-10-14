@@ -1,13 +1,13 @@
-#!/bin/bash
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 
+#!/bin/bash
 
 DIR=`pwd`
 DATETIME=`date +'date_%y-%m-%d_time_%H-%M-%S'`
-BASE_DATA_PATH=datasets
-DATASET=${BASE_DATA_PATH}/my-gpt2_text_document
+BASE_DATA_PATH=${HL_DATA_DIR_ROOT:-/data/bigscience/oscar-en/}
+DATA_PATH=${BASE_DATA_PATH}/meg-gpt2_text_document
 VOCAB_PATH=${BASE_DATA_PATH}/gpt2-vocab.json
 MERGE_PATH=${BASE_DATA_PATH}/gpt2-merges.txt
-
 
 script_path=$(realpath $0)
 script_dir=$(dirname $script_path)
@@ -77,41 +77,44 @@ done
 
 
 options=" \
-	--tensor-model-parallel-size $TP \
-	--pipeline-model-parallel-size $PP \
-	--ds-sequence-parallel-size $SP \
-        --num-layers $LAYERS \
-        --hidden-size $HIDDEN \
-        --num-attention-heads 32 \
-        --seq-length $SEQ \
-        --loss-scale 12 \
-        --max-position-embeddings $SEQ \
-	--micro-batch-size $MICRO_BATCH \
-	--global-batch-size $GLOBAL_BATCH \
-	--train-iters $TRAIN_ITERS \
-        --lr $LR \
-	--min-lr $MIN_LR \
-        --lr-decay-style cosine \
-        --log-interval 1 \
-        --eval-iters 40 \
-        --eval-interval 10 \
-	--data-path ${DATASET} \
-	--vocab-file ${VOCAB_PATH} \
-	--merge-file ${MERGE_PATH} \
-	--save-interval 100 \
-        --split 98,2,0 \
-        --clip-grad 1.0 \
-	--weight-decay 0.1 \
-	--adam-beta1 0.9 \
-	--adam-beta2 0.95 \
-	--init-method-std 0.006 \
-        --${DTYPE} \
-	--checkpoint-activations \
-	--exit-interval ${EXIT_INTERVAL} \
-        --save ${CHECKPOINT_PATH} \
-        --load ${LOAD_CHECKPOINT_PATH} \
-        --make-vocab-size-divisible-by 256 \
-	--tensorboard-dir $LOG_DIR
+    --tensor-model-parallel-size $TP \
+    --pipeline-model-parallel-size $PP \
+    --ds-sequence-parallel-size $SP \
+    --num-layers $LAYERS \
+    --hidden-size $HIDDEN \
+    --num-attention-heads 32 \
+    --seq-length $SEQ \
+    --loss-scale 12 \
+    --max-position-embeddings $SEQ \
+    --micro-batch-size $MICRO_BATCH \
+    --global-batch-size $GLOBAL_BATCH \
+    --train-iters $TRAIN_ITERS \
+    --lr $LR \
+    --min-lr $MIN_LR \
+    --lr-decay-style cosine \
+    --log-interval 1 \
+    --eval-iters 40 \
+    --eval-interval 10 \
+    --data-path ${DATA_PATH} \
+    --vocab-file ${VOCAB_PATH} \
+    --merge-file ${MERGE_PATH} \
+    --save-interval 100 \
+    --split 98,2,0 \
+    --clip-grad 1.0 \
+    --weight-decay 0.1 \
+    --adam-beta1 0.9 \
+    --adam-beta2 0.95 \
+    --init-method-std 0.006 \
+    --${DTYPE} \
+    --checkpoint-activations \
+    --recompute-granularity=full \
+    --recompute-method=uniform \
+    --no-gradient-accumulation-fusion \
+    --exit-interval ${EXIT_INTERVAL} \
+    --save ${CHECKPOINT_PATH} \
+    --load ${LOAD_CHECKPOINT_PATH} \
+    --make-vocab-size-divisible-by 256 \
+    --tensorboard-dir $LOG_DIR
         "
 
 options="${options} \
@@ -148,7 +151,7 @@ cat <<EOT > $CONFIG_JSON
 EOT
 
 WORKER_STR="--num_nodes 1 --num_gpus $WORLD_SIZE"
-run_cmd="deepspeed --master_port 29700 $WORKER_STR ${DIR}/pretrain_gpt.py $@ ${options}"
+run_cmd="deepspeed --master_port 29700 $WORKER_STR ${DIR}/../../pretrain_gpt.py $@ ${options}"
 
 echo ${options}
 echo ${run_cmd}

@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 # Parts of the code here are adapted from PyTorch
@@ -23,7 +24,10 @@ from megatron.core.parallel_state import (
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_group,
     get_global_memory_buffer,
+    is_pipeline_first_stage,
 )
+from megatron import get_args
+from megatron.global_vars import get_num_microbatches
 from .mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_tensor_model_parallel_region,
@@ -48,6 +52,15 @@ try:
     import fused_weight_gradient_mlp_cuda
 except ImportError:
     _grad_accum_fusion_available = False
+
+try:
+    import habana_frameworks.torch.hpex.experimental.transformer_engine as te
+except ImportError:
+    if get_accelerator().device_name() == 'hpu' and get_args().transformer_impl == "transformer_engine":
+        raise RuntimeError(
+                "Device name is hpu and transformer implementation is transformer_engine"
+                "but couldn't import habana_frameworks.torch.hpex.experimental.transformer_engine"
+            )
 
 _MODEL_PARALLEL_ATTRIBUTE_DEFAULTS = {'tensor_model_parallel': False,
                                       'partition_dim': -1,
@@ -136,6 +149,47 @@ def _initialize_affine_weight_cpu(weight, output_size, input_size,
     return None
 
 
+# This class encapsulates the behavior related to two mechanisms: hpu graph and amax measuring interval
+class FP8ModuleRunner():
+    def __init__(self, module, measure_interval: int=1, cache_fp8_weight_fwd=False):
+        self.args = get_args()
+        self.module = module
+        self.measure_interval = measure_interval
+        self.cache_fp8_weight_fwd = cache_fp8_weight_fwd
+        self.run_cnt = 0
+        self.in_activation_recompute_phase = None
+        if not self.args.fp8_manual_mode:
+            te.fp8.set_measurement_mode(manual=False)
+
+    def _is_first_microbatch(self):
+        if not self.cache_fp8_weight_fwd:
+            return None
+
+        if self.args.fp8_manual_mode:
+            return self.run_cnt % get_num_microbatches() in [1,2]
+        else:
+            return self.run_cnt % get_num_microbatches() == 1
+
+    def __call__(self, input, weight, bias=None):
+        if te.distributed.is_fp8_activation_recompute_enabled():
+            if not torch.is_grad_enabled():
+                # grad disabled - first non-recompute phase
+                self.in_activation_recompute_phase = False
+            elif self.in_activation_recompute_phase == False:
+                # grad enabled after being disabled - second recompute phase
+                self.in_activation_recompute_phase = True
+
+        if not self.in_activation_recompute_phase:
+            self.run_cnt += 1
+        if self.args.fp8_manual_mode:
+            measure = self.measure_interval == 1 or self.run_cnt % self.measure_interval == 1
+            te.fp8.set_measurement_mode(manual=True, manual_value=measure)
+
+        is_first_microbatch = self._is_first_microbatch()
+
+        return self.module(input, weight, bias, is_first_microbatch=is_first_microbatch)
+
+
 class VocabParallelEmbedding(torch.nn.Module):
     """Embedding parallelized in the vocabulary dimension.
 
@@ -171,6 +225,15 @@ class VocabParallelEmbedding(torch.nn.Module):
                 self.tensor_model_parallel_size)
         self.num_embeddings_per_partition = self.vocab_end_index - \
             self.vocab_start_index
+
+        # Allocate weights and initialize.
+        args = get_args()
+        # only the first stage embedding runs this class' forward. The head's embedding does its own
+        # thing, so don't waste memory allocating LN weights.
+        self.layer_norm = None
+        if is_pipeline_first_stage() and args.embed_layernorm:
+            from megatron.model import LayerNorm
+            self.layer_norm = LayerNorm(embedding_dim, sequence_parallel=config.sequence_parallel)
 
         # Allocate weights and initialize.
         if config.use_cpu_initialization:
@@ -210,6 +273,10 @@ class VocabParallelEmbedding(torch.nn.Module):
             output_parallel[input_mask, :] = 0.0
         # Reduce across all the model parallel GPUs.
         output = reduce_from_tensor_model_parallel_region(output_parallel)
+
+        if self.layer_norm is not None:
+            output = self.layer_norm(output)
+
         return output
 
 
@@ -241,6 +308,9 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
     @custom_fwd
     def forward(ctx, input, weight, bias, gradient_accumulation_fusion,
                 async_grad_allreduce, sequence_parallel):
+        # sequence parallel will cause all_gather which requires contiguous tensors
+        input = input.contiguous() if sequence_parallel else input
+
         ctx.save_for_backward(input, weight)
         ctx.use_bias = bias is not None
         ctx.gradient_accumulation_fusion = gradient_accumulation_fusion
@@ -270,9 +340,10 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         else:
             total_input = input
 
-        output = torch.matmul(total_input, weight.t())
-        if bias is not None:
-            output = output + bias
+        # output = torch.matmul(total_input, weight.t())
+        # if bias is not None:
+        #     output = output + bias
+        output = F.linear(total_input, weight, bias)
         return output
 
     @staticmethod
@@ -431,6 +502,8 @@ def linear_with_grad_accumulation_and_async_allreduce(
         all gathered, and the backward pass the input gradients are
         reduce scattered.
     """
+    if not sequence_parallel:
+        return F.linear(input, weight, bias)
     args = [
         input,
         weight,
@@ -441,7 +514,7 @@ def linear_with_grad_accumulation_and_async_allreduce(
     ]
 
     if not linear_with_grad_accumulation_and_async_allreduce.warned:
-        if os.environ.get('CUDA_DEVICE_MAX_CONNECTIONS') != "1":
+        if get_accelerator().device_name() == "cuda" and os.environ.get('CUDA_DEVICE_MAX_CONNECTIONS') != "1":
             if sequence_parallel:
                 warnings.warn(
                     "When using sequence parallelism it is recommended to set the "
@@ -520,6 +593,9 @@ class ColumnParallelLinear(torch.nn.Module):
         self.skip_bias_add = skip_bias_add
         self.config = config
 
+        args = get_args()
+        self.transformer_impl = args.transformer_impl
+
         # Parameters.
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
@@ -591,6 +667,16 @@ class ColumnParallelLinear(torch.nn.Module):
                 "cannot be enabled at the same time."
             )
 
+        self.output_parallel_linear = F.linear
+        if self.training and self.transformer_impl == "transformer_engine" \
+            and get_accelerator().device_name() == "hpu":
+            linear_fp8 = te.Linear(
+                self.input_size,
+                self.output_size_per_partition,
+                skip_weight_param_allocation=True,
+                bias=bias,
+                minimize_memory=not args.cache_fp8_weight)
+            self.output_parallel_linear = FP8ModuleRunner(linear_fp8, args.fp8_interval, args.cache_fp8_weight_fwd)
 
     def forward(self,
                 input_: torch.Tensor,
@@ -608,6 +694,8 @@ class ColumnParallelLinear(torch.nn.Module):
             - bias
 
         """
+        args = get_args()
+
         if weight is None:
             if self.weight is None:
                 raise RuntimeError("weight was not supplied to ColumnParallelLinear forward pass "
@@ -629,14 +717,20 @@ class ColumnParallelLinear(torch.nn.Module):
         else:
             input_parallel = copy_to_tensor_model_parallel_region(input_)
         # Matrix multiply.
-        output_parallel = linear_with_grad_accumulation_and_async_allreduce(
+        if args.transformer_impl == "transformer_engine" and get_accelerator().device_name() == 'hpu':
+            gather_input = lambda x: x
+            if self.sequence_parallel:
+                gather_input = gather_from_sequence_parallel_region
+            output_parallel = self.output_parallel_linear(gather_input(input_parallel), self.weight, self.bias)
+        else:
+            output_parallel = linear_with_grad_accumulation_and_async_allreduce(
             input=input_parallel,
             weight=weight,
             bias=bias,
             gradient_accumulation_fusion=self.gradient_accumulation_fusion,
             async_grad_allreduce=self.async_tensor_model_parallel_allreduce,
             sequence_parallel=self.sequence_parallel
-        )
+            )
         if self.gather_output and not self.is_expert_without_slicing:
             # All-gather across the partitions.
             assert not self.sequence_parallel
@@ -645,6 +739,46 @@ class ColumnParallelLinear(torch.nn.Module):
             output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
+
+    def get_extra_state(self):
+        if self.training and self.transformer_impl == "transformer_engine" \
+            and get_accelerator().device_name() == "hpu":
+            return self.output_parallel_linear.module.get_extra_state()
+        return None
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs
+    ):
+        extra_state_key = None
+        extra_state_value = None
+        if self.training and self.transformer_impl == "transformer_engine" \
+            and get_accelerator().device_name() == "hpu":
+            extra_state_key = prefix + torch.nn.modules.module._EXTRA_STATE_KEY_SUFFIX
+            if extra_state_key in state_dict:
+                extra_state_value = state_dict.pop(extra_state_key)
+                self.output_parallel_linear.module._load_from_state_dict({extra_state_key: extra_state_value},
+                                                                        prefix,
+                                                                        local_metadata,
+                                                                        strict,
+                                                                        missing_keys,
+                                                                        unexpected_keys,
+                                                                        error_msgs)
+        super()._load_from_state_dict(state_dict,
+                                        prefix,
+                                        local_metadata,
+                                        strict,
+                                        missing_keys,
+                                        unexpected_keys,
+                                        error_msgs)
+        if extra_state_value is not None:
+            state_dict[extra_state_key] = extra_state_value
 
 
 class RowParallelLinear(torch.nn.Module):
@@ -711,6 +845,9 @@ class RowParallelLinear(torch.nn.Module):
         if self.sequence_parallel and not self.input_is_parallel:
             raise RuntimeError("To enable `sequence_parallel`, `input_is_parallel` must be `True`")
 
+        args = get_args()
+        self.transformer_impl = args.transformer_impl
+
         # Parameters.
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
@@ -749,6 +886,15 @@ class RowParallelLinear(torch.nn.Module):
         else:
             self.register_parameter('bias', None)
 
+        self.output_parallel_linear = F.linear
+        if self.training and args.transformer_impl == "transformer_engine" and get_accelerator().device_name() == 'hpu':
+            linear_fp8 = te.Linear(
+                self.input_size_per_partition,
+                self.output_size,
+                skip_weight_param_allocation=True,
+                bias=bias,
+                minimize_memory=not args.cache_fp8_weight)
+            self.output_parallel_linear = FP8ModuleRunner(linear_fp8, args.fp8_interval, args.cache_fp8_weight_fwd)
 
 
     def forward(self, input_):
@@ -768,14 +914,17 @@ class RowParallelLinear(torch.nn.Module):
             assert not self.sequence_parallel
             input_parallel = scatter_to_tensor_model_parallel_region(input_)
         # Matrix multiply.
-        output_parallel = linear_with_grad_accumulation_and_async_allreduce(
-            input=input_parallel,
-            weight=self.weight,
-            bias=None,
-            gradient_accumulation_fusion=self.gradient_accumulation_fusion,
-            async_grad_allreduce=False,
-            sequence_parallel=False,
-        )
+        if get_args().transformer_impl == "transformer_engine" and get_accelerator().device_name() == 'hpu':
+            output_parallel = self.output_parallel_linear(input_parallel, self.weight, self.bias)
+        else:
+            output_parallel = linear_with_grad_accumulation_and_async_allreduce(
+                input=input_parallel,
+                weight=self.weight,
+                bias=None,
+                gradient_accumulation_fusion=self.gradient_accumulation_fusion,
+                async_grad_allreduce=False,
+                sequence_parallel=False,
+            )
 
         # All-reduce across all the partitions.
         if self.sequence_parallel:
@@ -791,3 +940,45 @@ class RowParallelLinear(torch.nn.Module):
             output = output_
             output_bias = self.bias
         return output, output_bias
+
+
+    def get_extra_state(self):
+        if self.training and self.transformer_impl == "transformer_engine" \
+            and get_accelerator().device_name() == "hpu":
+            return self.output_parallel_linear.module.get_extra_state()
+        return None
+
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs
+    ):
+        extra_state_key = None
+        extra_state_value = None
+        if self.training and self.transformer_impl == "transformer_engine" \
+            and get_accelerator().device_name() == "hpu":
+            extra_state_key = prefix + torch.nn.modules.module._EXTRA_STATE_KEY_SUFFIX
+            if extra_state_key in state_dict:
+                extra_state_value = state_dict.pop(extra_state_key)
+                self.output_parallel_linear.module._load_from_state_dict({extra_state_key: extra_state_value},
+                                                                        prefix,
+                                                                        local_metadata,
+                                                                        strict,
+                                                                        missing_keys,
+                                                                        unexpected_keys,
+                                                                        error_msgs)
+        super()._load_from_state_dict(state_dict,
+                                        prefix,
+                                        local_metadata,
+                                        strict,
+                                        missing_keys,
+                                        unexpected_keys,
+                                        error_msgs)
+        if extra_state_value is not None:
+            state_dict[extra_state_key] = extra_state_value
