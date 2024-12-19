@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Megatron number of micro-batches calculators."""
@@ -6,21 +7,34 @@ from abc import ABC
 from abc import abstractmethod
 
 
-def build_num_microbatches_calculator(args):
+def build_num_microbatches_calculator(args, micro_batch):
 
-    # Constant num micro-batches.
     if args.rampup_batch_size is None:
-        num_microbatches_calculator = ConstantNumMicroBatches(
-            args.global_batch_size, args.micro_batch_size,
-            args.data_parallel_size)
-        if args.rank == 0:
-            print('setting number of micro-batches to constant {}'.format(
-                num_microbatches_calculator.get()), flush=True)
-
+        if args.scheduler_batch_size is None:
+            # Constant num micro-batches.
+            num_microbatches_calculator = ConstantNumMicroBatches(
+                args.global_batch_size, micro_batch,
+                args.data_parallel_size)
+            if args.rank == 0:
+                print('setting number of micro-batches to constant {}'.format(
+                    num_microbatches_calculator.get()), flush=True)
+        else:
+            # varying global batch size
+            if args.rank == 0:
+                print('will use batch size scheduler with these global batch sizes '
+                    '{} which will update after {} samples'
+                    .format(args.scheduler_batch_size,
+                            args.batch_sched_samples), flush=True)
+            num_microbatches_calculator = VaryingBatchsizeNumMicroBatches(
+                args.scheduler_batch_size, args.batch_sched_samples,
+                args.micro_batch_size, args.data_parallel_size)
     else:
         assert len(args.rampup_batch_size) == 3, 'expected the following ' \
             'format: --rampup-batch-size <start batch size> ' \
             '<batch size incerement> <ramp-up samples>'
+        assert args.micro_batch_size == args.eval_micro_batch_size, \
+            "build_num_microbatches_calculator with rampup_batch_size - " \
+            "Unsupported for split micro batch size"
         start_batch_size = int(args.rampup_batch_size[0])
         batch_size_increment = int(args.rampup_batch_size[1])
         ramup_samples = int(args.rampup_batch_size[2])
@@ -132,6 +146,63 @@ class RampupBatchsizeNumMicroBatches(NumMicroBatchesCalculator):
             self.current_global_batch_size = self.start_batch_size + \
                 steps * self.batch_size_increment
             assert self.current_global_batch_size <= self.global_batch_size
+
+        if consistency_check:
+            assert self.current_global_batch_size % \
+                self.micro_batch_times_data_parallel_size == 0, 'current global ' \
+                'batch size ({}) is not divisible by micro-batch-size ({}) times' \
+                'data parallel size ({})'.format(self.current_global_batch_size,
+                                                 self.micro_batch_size,
+                                                 self.data_parallel_size)
+        self.num_micro_batches = self.current_global_batch_size // \
+                                 self.micro_batch_times_data_parallel_size
+
+
+class VaryingBatchsizeNumMicroBatches(NumMicroBatchesCalculator):
+
+    def __init__(self, scheduler_batch_size, batch_sched_samples,
+                 micro_batch_size, data_parallel_size):
+        """Batch size scheduler based on consumed samples.
+        Over
+          samples
+        increment batch size from scheduler-batch-size and batch-sched-samples
+        samples.
+        Arguments:
+            scheduler-batch-size: global batch sizes for all training period
+            batch_sched_samples: number of samples for every batch size
+            micro_batch_size: micro batch size
+            data_parallel_size: data parallel size.
+        """
+        self.micro_batch_size = micro_batch_size
+        self.data_parallel_size = data_parallel_size
+        self.micro_batch_times_data_parallel_size = self.micro_batch_size * \
+                                                    self.data_parallel_size
+        assert self.micro_batch_times_data_parallel_size > 0
+        self.scheduler_batch_size = scheduler_batch_size
+        self.batch_sched_samples = batch_sched_samples
+        self.cur_step = -1  # to allow catching first step with any number of consumed samples
+        self.num_increments = len(self.batch_sched_samples)
+        assert self.num_increments > 0
+
+        # Initialize number of microbatches.
+        self.num_micro_batches = self.scheduler_batch_size[0] // \
+                                 self.micro_batch_times_data_parallel_size
+
+
+    def update(self, consumed_samples, consistency_check):
+        # consumed samples after checkpoints is maintained (in args.consumed_train_samples)
+        if self.cur_step == -1:  # first time in update
+            assert self.batch_sched_samples[0] == consumed_samples, \
+                f'set initial global_batch_size at batch_sched_samples==consumed samples at run start, {self.batch_sched_samples[0]} != {consumed_samples}'
+            self.cur_step = 0
+        elif self.cur_step+1 < self.num_increments and consumed_samples >= self.batch_sched_samples[self.cur_step+1]:
+            # move to next step if availalbe else remain in current step
+            print(f'Updating global_batch_size from {self.scheduler_batch_size[self.cur_step]} to {self.scheduler_batch_size[self.cur_step+1]}.')
+            self.cur_step += 1
+        else:
+            # remain in cur step
+            pass
+        self.current_global_batch_size = self.scheduler_batch_size[self.cur_step]
 
         if consistency_check:
             assert self.current_global_batch_size % \

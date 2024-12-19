@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """General utilities."""
@@ -22,6 +23,11 @@ from megatron.core import mpu
 from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
 from megatron.model.module import param_is_not_shared
 from megatron.model.rotary_pos_embedding import RotaryEmbedding
+
+try:
+    from habana_frameworks.torch.hpex.experimental.transformer_engine import recipe
+except (ImportError, ModuleNotFoundError):
+    recipe = None
 
 
 def update_rotary_pos_emb(seq_length):
@@ -163,7 +169,9 @@ def get_ltor_masks_and_position_ids(data,
                                     reset_position_ids,
                                     reset_attention_mask,
                                     eod_mask_loss,
-                                    skip_mask=False):
+                                    skip_mask=False,
+                                    dummy_sample=None,
+                                    labels=None):
     """Build masks and position id for left to right model."""
 
     # Extract batch size and sequence length.
@@ -178,12 +186,18 @@ def get_ltor_masks_and_position_ids(data,
     attention_mask = None
     if not skip_mask:
         attention_mask = torch.tril(torch.ones(
-            (att_mask_batch, seq_length, seq_length))).view(att_mask_batch, 1, seq_length, seq_length)
+            (att_mask_batch, seq_length, seq_length), device=data.device)).view(att_mask_batch, 1, seq_length, seq_length)
 
     # Loss mask.
     loss_mask = torch.ones(data.size(), dtype=torch.float, device=data.device)
     if eod_mask_loss:
         loss_mask[data == eod_token] = 0.0
+
+    if dummy_sample is not None:
+        loss_mask[dummy_sample.bool()] = 0.0
+
+    if labels is not None:
+        loss_mask[labels == -1] = 0.0
 
     # Position ids.
     position_ids = torch.arange(seq_length, dtype=torch.long,
@@ -218,7 +232,6 @@ def get_ltor_masks_and_position_ids(data,
     # Convert attention mask to binary:
     if not skip_mask:
         attention_mask = (attention_mask < 0.5)
-        attention_mask = attention_mask.to(data.device)
 
     return attention_mask, loss_mask, position_ids
 
@@ -275,22 +288,38 @@ def throughput_calculator(model, args, iteration_time, total_iterations):
 
     #flops calculator
     hidden_size = args.hidden_size
+    num_attention_heads = args.num_attention_heads
+    head_dim = hidden_size // num_attention_heads
+    ffn_hidden_size = args.ffn_hidden_size
     num_layers = args.num_layers
     vocab_size = args.padded_vocab_size
+    gqa = args.num_attention_heads // args.num_key_value_heads
+    ffn_multiplier = 3 if args.swiglu else 2
+    macs_per_flops = 2
 
     # General TFLOPs formula (borrowed from Equation 3 in Section 5.1 of
     # https://arxiv.org/pdf/2104.04473.pdf).
-    # The factor of 4 is when used with activation check-pointing,
-    # otherwise it will be 3.
-    checkpoint_activations_factor = 3
-    if hasattr(args, 'checkpoint_activations') and args.checkpoint_activations:
-        checkpoint_activations_factor = 4
-    if hasattr(args, 'recompute_granularity') and (args.recompute_granularity == 'selective' or args.recompute_granularity == 'full'):
-        checkpoint_activations_factor = 4
+    # correction has been made to TFLOPs formula due to incorrect behavior
+    # observed with selective recompute when GQA not used and for all with GQA
     seq_len = args.seq_length
     if hasattr(args, 'actual_seq_length'):
         seq_len = args.actual_seq_length
-    flops_per_iteration = (24 * checkpoint_activations_factor * batch_size * seq_len * num_layers * (hidden_size**2)) * (1. + (seq_len / (6. * hidden_size)) + (vocab_size / (16. * num_layers * hidden_size)))
+
+    pre_and_post_mha_gemm_macs = batch_size * num_layers * (1 + (2 // gqa) + 1) * (hidden_size**2) * seq_len
+    mha_bgemm_macs = batch_size * num_layers * 2 * head_dim * num_attention_heads * (seq_len**2)
+    ffn_gemm_macs = batch_size * num_layers * ffn_multiplier * ffn_hidden_size * hidden_size * seq_len
+    logit_lmhead_gemm_macs = batch_size * vocab_size * hidden_size * seq_len
+
+    fwd_macs = pre_and_post_mha_gemm_macs + mha_bgemm_macs + ffn_gemm_macs + logit_lmhead_gemm_macs
+    bwd_macs = 2 * fwd_macs
+    fwd_bwd_macs = fwd_macs + bwd_macs
+
+    if (hasattr(args, 'checkpoint_activations') and args.checkpoint_activations) or (hasattr(args, 'recompute_granularity') and args.recompute_granularity == 'full'):
+        fwd_bwd_macs += fwd_macs
+    if hasattr(args, 'recompute_granularity') and args.recompute_granularity == 'selective':
+        fwd_bwd_macs += mha_bgemm_macs
+
+    flops_per_iteration = fwd_bwd_macs * macs_per_flops
     tflops = flops_per_iteration / (elapsed_time_per_iter * args.world_size * (10**12))
     return samples_per_second, tflops, approx_parameters_in_billions
 
@@ -300,7 +329,6 @@ def checkpoint_throughput_calculator(model, latency_second):
     checkpoint_GB = approx_parameters_in_billions * checkpoint_multiplier
     GB_per_second = checkpoint_GB / latency_second
     print_rank_0(f"Checkpoint Save GB: {round(checkpoint_GB, 3)}, GB/Sec: {round(GB_per_second,2)}, Latency(second): {round(latency_second, 3)}")
-
 
 def get_fingerprint_header():
     return f"{'min':^13} {'max':^13} {'mean':^13} {'l2 norm':^12} metadata"
@@ -381,3 +409,29 @@ def dump_weights(preamble, iteration, model, optimizer, tensor=None):
                 p = model[0].module.tied_modules.embed.word_embeddings.weight._hp_param
                 fh.write(f"{get_fingerprint(p)} module.tied_modules.embed.word_embeddings.weight._hp_param {p.shape}\n")
 
+def found_kill_switch():
+    args = get_args()
+    if args.kill_switch_path is not None and os.path.exists(args.kill_switch_path):
+        return True
+    else:
+        return False
+
+
+FP8_RECIPE=None
+def get_fp8_recipe(args):
+    global FP8_RECIPE
+    if FP8_RECIPE is None:
+        if args.fp8_e5m2:
+            fp8_format = recipe.Format.E5M2
+        elif args.fp8_hybrid:
+            fp8_format = recipe.Format.HYBRID
+        fp8_interval = get_args().fp8_interval
+        FP8_RECIPE = recipe.DelayedScaling(
+            margin=args.fp8_margin,
+            interval=fp8_interval,
+            fp8_format=fp8_format,
+            amax_history_len=args.fp8_amax_history_len,
+            amax_compute_algo=args.fp8_amax_compute_algo,
+            reduce_amax=args.fp8_amax_reduce,
+        )
+    return FP8_RECIPE

@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 from deepspeed.accelerator import get_accelerator
@@ -7,6 +8,9 @@ if get_accelerator().device_name() == 'cuda':
 else:
     from torch.optim import Adam
     from torch.optim import SGD
+
+import torch
+from torch.optim import AdamW
 
 from megatron import get_args
 
@@ -24,6 +28,7 @@ def get_param_groups(modules,
        scale_lr_cond is used during finetuning where head of the network requires a scaled
        version of the base learning rate. 
     """
+    args = get_args()
     wd_no_scale_lr = []
     wd_scale_lr = []
     no_wd_no_scale_lr = []
@@ -33,9 +38,10 @@ def get_param_groups(modules,
             if not param.requires_grad:
                 continue
 
+            no_wd = None
             if no_weight_decay_cond is not None:
                 no_wd = no_weight_decay_cond(name, param)
-            else:
+            elif not args.do_norm_bias_weight_decay:
                 # do not regularize biases nor Norm parameters
                 no_wd = name.endswith(".bias") or len(param.shape) == 1
 
@@ -108,6 +114,20 @@ def get_megatron_optimizer(model,
                             lr=args.lr,
                             weight_decay=args.weight_decay,
                             momentum=args.sgd_momentum)
+        elif args.optimizer == 'adamw':
+            optimizer = AdamW(param_groups,
+                            lr=args.lr,
+                            weight_decay=args.weight_decay,
+                            betas=(args.adam_beta1, args.adam_beta2),
+                            eps=args.adam_eps)
+        elif args.optimizer == 'fusedadamw':
+            assert get_accelerator().device_name() == "hpu", "FusedAdamW optimizer is supported only when using HPU"
+            from habana_frameworks.torch.hpex.optimizers import FusedAdamW
+            optimizer = FusedAdamW(param_groups,
+                            lr=args.lr,
+                            weight_decay=args.weight_decay,
+                            betas=(args.adam_beta1, args.adam_beta2),
+                            eps=args.adam_eps)
         else:
             raise Exception('{} optimizer is not supported.'.format(
             args.optimizer))

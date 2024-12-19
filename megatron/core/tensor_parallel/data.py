@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 import torch
@@ -14,6 +15,7 @@ from megatron.core.parallel_state import (
 from deepspeed.accelerator import get_accelerator
 
 _MAX_DATA_DIM = 5
+_GLOBAL_CACHED_BROADCAST_SIZES = []
 
 
 def _check_data_types(keys, data, target_dtype):
@@ -21,6 +23,11 @@ def _check_data_types(keys, data, target_dtype):
     for key in keys:
         assert data[key].dtype == target_dtype, '{} has data type {} which '\
             'is different than {}'.format(key, data[key].dtype, target_dtype)
+
+
+def reset_cached_broadcast_sizes():
+    global _GLOBAL_CACHED_BROADCAST_SIZES
+    _GLOBAL_CACHED_BROADCAST_SIZES = []
 
 
 def _build_key_size_numel_dictionaries(keys, data, group=None, rank=-1, src_rank=-1):
@@ -45,12 +52,18 @@ def _build_key_size_numel_dictionaries(keys, data, group=None, rank=-1, src_rank
                 sizes[i + offset] = s
             offset += max_dim
 
-    # Move to GPU and broadcast.
-    sizes_cuda = get_accelerator().LongTensor(sizes)
-    torch.distributed.broadcast(sizes_cuda, src_rank, group=group)
+    global _GLOBAL_CACHED_BROADCAST_SIZES
+    if not _GLOBAL_CACHED_BROADCAST_SIZES:
+        # Move to GPU and broadcast.
+        sizes_cuda = get_accelerator().LongTensor(sizes)
+        torch.distributed.broadcast(sizes_cuda, src_rank, group=group)
+        # Move back to cpu and unpack.
+        sizes_cpu = sizes_cuda.cpu()
+        sizes_cpu = sizes_cpu.tolist()
+        _GLOBAL_CACHED_BROADCAST_SIZES = sizes_cpu
+    else:
+        sizes_cpu = _GLOBAL_CACHED_BROADCAST_SIZES
 
-    # Move back to cpu and unpack.
-    sizes_cpu = sizes_cuda.cpu()
     key_size = {}
     key_numel = {}
     total_numel = 0

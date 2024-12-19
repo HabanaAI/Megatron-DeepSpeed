@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 # This file isn't really a formal automated test, it's just a place to
 # put some code used during development and manual testing of
 # indexed_dataset.
@@ -8,10 +10,28 @@ import argparse
 import os
 import sys
 
+import pytest
 import torch
+import types
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, "../../../"))
+
+
+@pytest.fixture
+def args():
+    data_path = os.environ.get("HL_DATA_DIR_ROOT", "")
+    tokenizer_type = os.environ.get("HL_TOKENIZER_TYPE", "GPTSentencePieceTokenizer")
+    tokenizer_model = os.path.join(os.path.dirname(data_path), "tokenizer.model")
+    args = types.SimpleNamespace(rank=int(os.getenv('RANK', '0')),
+                                 data=data_path,
+                                 dataset_impl="infer",
+                                 count=10,
+                                 tokenizer_type=tokenizer_type,
+                                 tokenizer_model=tokenizer_model,
+                                 make_vocab_size_divisible_by=128,
+                                 tensor_model_parallel_size=int(os.getenv('WORLD_SIZE', '1')),)
+    return args
 
 
 def test_indexed_dataset(args):

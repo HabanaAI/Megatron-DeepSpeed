@@ -1,10 +1,11 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 import pytest
 
 import torch
 
-from megatron.core.transformer.parallel_attention import ParallelAttention
+from megatron.model.transformer import ParallelAttention
 
 
 @pytest.fixture

@@ -1,6 +1,8 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 
+from deepspeed.accelerator import get_accelerator
 import torch
 import torch.nn as nn
 from megatron.model.enums import AttnMaskType
@@ -144,7 +146,7 @@ class FusedScaleMaskSoftmax(nn.Module):
         # [b, np, sq, sk]
         assert input.dim() == 4
 
-        if self.is_kernel_available(mask, *input.size()):
+        if get_accelerator().device_name() == "cuda" and self.is_kernel_available(mask, *input.size()):
             return self.forward_fused_softmax(input, mask)
         else:
             return self.forward_torch_softmax(input, mask)

@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """This code is copied fron NVIDIA apex:
@@ -13,6 +14,9 @@ from torch.nn import functional as F
 import inspect
 
 from megatron.core.utils import make_viewless_tensor
+from megatron import get_args
+
+from deepspeed.accelerator.real_accelerator import get_accelerator
 
 try:
     from apex.contrib.layer_norm.layer_norm import FastLayerNormFN
@@ -20,7 +24,10 @@ try:
 except:
     HAVE_PERSIST_LAYER_NORM = False
 
-from apex.normalization.fused_layer_norm import FusedLayerNormAffineFunction
+try:
+    from apex.normalization.fused_layer_norm import FusedLayerNormAffineFunction
+except ModuleNotFoundError:
+    pass
 
 
 global fused_layer_norm_cuda
@@ -39,8 +46,9 @@ class MixedFusedLayerNorm(torch.nn.Module):
         self.apply_layernorm_1p = apply_layernorm_1p
         self.mem_efficient_ln = mem_efficient_ln
 
-        global fused_layer_norm_cuda
-        fused_layer_norm_cuda = importlib.import_module("fused_layer_norm_cuda")
+        if get_accelerator().device_name() == 'cuda':
+            global fused_layer_norm_cuda
+            fused_layer_norm_cuda = importlib.import_module("fused_layer_norm_cuda")
 
         # List of hiddens sizes supported in the persistent layer norm kernel
         # If the hidden size is not supported, fall back to the non-persistent
@@ -56,8 +64,13 @@ class MixedFusedLayerNorm(torch.nn.Module):
             normalized_shape = (normalized_shape,)
         self.normalized_shape = torch.Size(normalized_shape)
         self.eps = eps
-        self.weight = Parameter(torch.Tensor(*normalized_shape))
-        self.bias = Parameter(torch.Tensor(*normalized_shape))
+        args = get_args()
+        self.weight = Parameter(torch.empty(*normalized_shape,
+                                device=get_accelerator().current_device_name(),
+                                dtype=args.params_dtype))
+        self.bias = Parameter(torch.empty(*normalized_shape,
+                              device=get_accelerator().current_device_name(),
+                              dtype=args.params_dtype))
         self.reset_parameters()
         self.no_persist_layer_norm = no_persist_layer_norm
         self.sequence_parallel = sequence_parallel
@@ -81,8 +94,9 @@ class MixedFusedLayerNorm(torch.nn.Module):
     weight = self.weight + 1 if self.apply_layernorm_1p else self.weight
     # CPU path is here for unittest sake.
     if not input.is_cuda:
-        print("WARNING! The input of FusedLayerNorm should be on the GPU."
-              "This warning should only be triggered in the FusedLayerNorm unit tests.")
+        if get_accelerator().device_name() == 'cuda':
+            print("WARNING! The input of FusedLayerNorm should be on the GPU."
+                "This warning should only be triggered in the FusedLayerNorm unit tests.")
         return F.layer_norm(input, self.normalized_shape, weight, self.bias, self.eps)
 
     if self.no_persist_layer_norm:

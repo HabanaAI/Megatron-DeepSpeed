@@ -1,17 +1,26 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
-from commons import set_random_seed
-from commons import IdentityLayer
-from commons import print_separator
-from commons import initialize_distributed
-from mpu.cross_entropy import vocab_parallel_cross_entropy
-import mpu
+from .commons import set_random_seed
+from .commons import IdentityLayer
+from .commons import print_separator
+from .commons import initialize_distributed
+from megatron.core.tensor_parallel.cross_entropy import vocab_parallel_cross_entropy
+from megatron.core.tensor_parallel.mappings import scatter_to_tensor_model_parallel_region
+from megatron.core import mpu
+import os
+import pytest
 import torch.nn.functional as F
 import torch
 import random
 import sys
 from deepspeed.accelerator import get_accelerator
 sys.path.append("../..")
+
+
+@pytest.fixture
+def tensor_model_parallel_size():
+    return int(os.getenv("WORLD_SIZE", '1'))
 
 
 def torch_cross_entropy(batch_size, seq_length, vocab_size,
@@ -21,7 +30,7 @@ def torch_cross_entropy(batch_size, seq_length, vocab_size,
                              scale=logits_scale).to(get_accelerator().device_name())
     logits = identity()
     target = get_accelerator().LongTensor(
-        size=(batch_size, seq_length)).random_(0, vocab_size)
+        torch.zeros(size=(batch_size, seq_length))).random_(0, vocab_size)
     loss = F.cross_entropy(logits.view(-1, logits.size()[-1]),
                            target.view(-1),
                            reduction='none').view_as(target).mean()
@@ -35,9 +44,9 @@ def mpu_cross_entropy(batch_size, seq_length, vocab_size,
     identity = IdentityLayer((batch_size, seq_length, vocab_size),
                              scale=logits_scale).to(get_accelerator().device_name())
     logits = identity()
-    logits_parallel = mpu.scatter_to_tensor_model_parallel_region(logits)
+    logits_parallel = scatter_to_tensor_model_parallel_region(logits)
     target = get_accelerator().LongTensor(
-        size=(batch_size, seq_length)).random_(0, vocab_size)
+        torch.zeros(size=(batch_size, seq_length))).random_(0, vocab_size)
     loss = vocab_parallel_cross_entropy(logits_parallel, target).mean()
     loss.backward()
     return loss, identity.weight.grad
@@ -45,6 +54,7 @@ def mpu_cross_entropy(batch_size, seq_length, vocab_size,
 
 def test_cross_entropy(tensor_model_parallel_size):
 
+    initialize_distributed()
     if torch.distributed.get_rank() == 0:
         print('> testing cross entropy with model parallel size {} ...'.
               format(tensor_model_parallel_size))
@@ -77,7 +87,7 @@ def test_cross_entropy(tensor_model_parallel_size):
     assert error < 1.0e-6
 
     # Reset groups
-    mpu.destroy_tensor_model_parallel()
+    mpu.destroy_model_parallel()
 
     torch.distributed.barrier()
     if torch.distributed.get_rank() == 0:

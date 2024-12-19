@@ -166,3 +166,16 @@ Import location: Replace data at selected cell
 4. Now it should be easy to align the new records with the old ones - delete irrelevant records and Insert->Cells where data is missing until the first 2 columns match
 
 5. now create 2 cols in the main table on top and now it should be safe to Copy-n-Paste the 2-col data range, without the task/metrics columns into the newly created space. -->
+
+## Running lm-eval in Mixtral
+In Mixtral LM evaluation harness can be triggered directly from generic run script. To run the tests, use a pre-trained model checkpoint and load it in evaluation framework using the same training script, adding `HL_RUN_EVAL_HARNESS=1`, path `HL_CHECKPOINTS_DIR` and tag `HL_CHECKPOINT_LOAD_TAG` of the saved checkpoint:
+  ```
+  HL_RUN_EVAL_HARNESS=1 \
+  HL_CHECKPOINTS_DIR=<dir> \
+  HL_CHECKPOINT_LOAD_TAG=global_step1000 \
+  HL_TRUST_REMOTE_CODE=1 \
+  HL_EVAL_TASKS='wikitext,webqs,winogrande' \
+  $MEGATRON_DEEPSPEED_ROOT/scripts/run_mixtral.sh
+  ```
+Standard model arguments for inference such as 3D config, batch size, etc. are also required. Specify `HL_EVAL_TASKS` to run the tests on a subset of the tasks.
+For tasks not included in HuggingFace database, pass `HL_TRUST_REMOTE_CDDE=1`. For some tasks, pre-downloaded dataset may be needed, additional preparation steps can be found in the section above.

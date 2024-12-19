@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 import torch
 import re
 import sys
@@ -136,20 +138,26 @@ class refactor:
             hidden_size, self.tp_rank, self.tp_size)
         hidden_size_per_attention_head = divide(hidden_size,
                                                 self.config.num_attention_heads)
+        key_value_factor = int(wq.shape[0] / wk.shape[0])
+        key_value_hidden_size_per_attention_head = hidden_size_per_attention_head
+        hidden_size_per_attention_head = int(hidden_size_per_attention_head * key_value_factor)
         num_attention_heads_per_partition = divide(self.config.num_attention_heads,
                                                    self.tp_size)
 
-        new_w = torch.zeros((per_partition_size * 3, wq.shape[1]), dtype=wq.dtype)
+        new_w = torch.zeros((int(per_partition_size * (1+2/key_value_factor)), wq.shape[1]), dtype=wq.dtype)
 
         for i in range(num_attention_heads_per_partition):
             current_index = start_index + i * hidden_size_per_attention_head
             next_index = current_index + hidden_size_per_attention_head
-            new_w_index = i * (3 * hidden_size_per_attention_head)
-            new_w[new_w_index: new_w_index + (3 * hidden_size_per_attention_head), :] = \
+            key_value_current_index = start_index + i * key_value_hidden_size_per_attention_head
+            key_value_next_index = key_value_current_index + key_value_hidden_size_per_attention_head
+            combined_hidden_size = hidden_size_per_attention_head + 2 * key_value_hidden_size_per_attention_head
+            new_w_index = i * combined_hidden_size
+            new_w[new_w_index: new_w_index + combined_hidden_size, :] = \
                 torch.cat([
                     wq[current_index: next_index, :],
-                    wk[current_index: next_index, :],
-                    wv[current_index: next_index, :]
+                    wk[key_value_current_index: key_value_next_index, :],
+                    wv[key_value_current_index: key_value_next_index, :]
                 ], dim=0)
         self.record_mapping_info(
             f"mega-ds:{pname,p.data.shape}<--hf{hf_wq_name,hf_wk_name,hf_wv_name,}  cat q,k,v [{current_index}:{next_index},:]  of q,k,v{wq.shape}"

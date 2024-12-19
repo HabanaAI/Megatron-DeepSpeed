@@ -1,8 +1,12 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+
 #!/bin/bash
 set -ex
 
-BASE_PATH=/vc_data/Megatron-LM/data
-DATA_PATH=${BASE_PATH}/indexed_datasets/megatron
+BASE_DATA_PATH=${HL_DATA_DIR_ROOT:-/data/bigscience/oscar-en/}
+DATA_PATH=${BASE_DATA_PATH}/meg-gpt2_text_document
+VOCAB_PATH=${BASE_DATA_PATH}/gpt2-vocab.json
+MERGE_PATH=${BASE_DATA_PATH}/gpt2-merges.txt
 DS_CONFIG=ds_config.json
 
 TP=1
@@ -48,7 +52,7 @@ ds_args=" --zero-stage=$ZERO_STAGE ${ds_args}"
 ds_args=" --deepspeed-activation-checkpointing ${ds_args}"
 
 
-deepspeed pretrain_gpt.py \
+deepspeed ../pretrain_gpt.py \
     --tensor-model-parallel-size $TP \
     --pipeline-model-parallel-size $PP \
     --num-layers $NLAYERS \
@@ -67,8 +71,8 @@ deepspeed pretrain_gpt.py \
     --eval-iters 40 \
     --eval-interval 1000 \
     --data-path $DATA_PATH \
-    --vocab-file $BASE_PATH/gpt2-vocab.json \
-    --merge-file $BASE_PATH/gpt2-merges.txt \
+    --vocab-file $VOCAB_PATH \
+    --merge-file $MERGE_PATH \
     --save-interval 1000 \
     --split 98,2,0 \
     --clip-grad 1.0 \
@@ -78,7 +82,9 @@ deepspeed pretrain_gpt.py \
     --init-method-std 0.006 \
     --fp16 \
     --checkpoint-activations \
+    --recompute-granularity=full \
+    --recompute-method=uniform \
+    --no-gradient-accumulation-fusion \
     --tensorboard-dir $OUTPUT_DIR \
     $ds_args \
     --exit-interval 5000 | tee ${OUTPUT_DIR}/output.log
-

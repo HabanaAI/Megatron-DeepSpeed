@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """GPT style dataset."""
@@ -24,7 +25,8 @@ def build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                     valid_data_prefix=None,
                                     test_data_prefix=None,
                                     return_doc_ids=False, *,
-                                    data_cache_path=None):
+                                    data_cache_path=None,
+                                    use_seq_len_plus_one_tokens=True):
     """Build train, valid, and test datasets."""
 
     if data_prefix:
@@ -36,7 +38,8 @@ def build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                                     data_impl, splits_string,
                                                     train_valid_test_num_samples,
                                                     seq_length, seed, skip_warmup,
-                                                    data_cache_path=data_cache_path)
+                                                    data_cache_path=data_cache_path,
+                                                    use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
 
         # Blending dataset.
         # Parse the values.
@@ -58,7 +61,8 @@ def build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                 datasets_train_valid_test_num_samples[i],
                 seq_length, seed, skip_warmup,
                 return_doc_ids,
-                data_cache_path=data_cache_path)
+                data_cache_path=data_cache_path,
+                use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
             if train_ds:
                 train_datasets.append(train_ds)
             if valid_ds:
@@ -93,14 +97,16 @@ def build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                           splits_string,
                                           train_valid_test_num_samples[0],
                                           seq_length, seed, skip_warmup,
-                                          data_cache_path=data_cache_path)
+                                          data_cache_path=data_cache_path,
+                                          use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
 
         if valid_data_prefix is not None:
             valid_dataset = build_dataset("valid", valid_data_prefix, data_impl,
                                           splits_string,
                                           train_valid_test_num_samples[1],
                                           seq_length, seed, False,
-                                          data_cache_path=data_cache_path)
+                                          data_cache_path=data_cache_path,
+                                          use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
 
 
         if test_data_prefix is not None:
@@ -108,7 +114,8 @@ def build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                          splits_string,
                                          train_valid_test_num_samples[2],
                                          seq_length, seed, False,
-                                         data_cache_path=data_cache_path)
+                                         data_cache_path=data_cache_path,
+                                         use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
 
         return (train_dataset, valid_dataset, test_dataset)
 
@@ -117,7 +124,8 @@ def _build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                      train_valid_test_num_samples,
                                      seq_length, seed, skip_warmup,
                                      return_doc_ids=False, *,
-                                     data_cache_path=None):
+                                     data_cache_path=None,
+                                     use_seq_len_plus_one_tokens):
     """Build train, valid, and test datasets."""
 
     # Indexed dataset.
@@ -150,7 +158,8 @@ def _build_train_valid_test_datasets(data_prefix, data_impl, splits_string,
                                  train_valid_test_num_samples[index],
                                  seq_length, seed,
                                  return_doc_ids,
-                                 data_cache_path=data_cache_path)
+                                 data_cache_path=data_cache_path,
+                                 use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
         return dataset
 
     train_dataset = build_dataset(0, 'train')
@@ -164,13 +173,15 @@ def build_dataset(dataset_name, data_prefix, data_impl,
                   splits_string, num_samples,
                   seq_length, seed, skip_warmup,
                   *,
-                  data_cache_path=None):
+                  data_cache_path=None,
+                  use_seq_len_plus_one_tokens=True):
     dataset = None
     if len(data_prefix) == 1:
         dataset = _build_dataset(dataset_name, data_prefix[0], data_impl,
                                  splits_string, num_samples, seq_length,
                                  seed, skip_warmup,
-                                 data_cache_path=data_cache_path)
+                                 data_cache_path=data_cache_path,
+                                 use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
     else:
         # Blending dataset.
         # Parse the values.
@@ -184,7 +195,8 @@ def build_dataset(dataset_name, data_prefix, data_impl,
             ds = _build_dataset(dataset_name, prefixes[i], data_impl,
                                 splits_string, dataset_num_samples[i],
                                 seq_length, seed, skip_warmup,
-                                data_cache_path=data_cache_path)
+                                data_cache_path=data_cache_path,
+                                use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
             if ds:
                 datasets.append(ds)
 
@@ -198,7 +210,8 @@ def build_dataset(dataset_name, data_prefix, data_impl,
 def _build_dataset(dataset_name, data_prefix, data_impl, splits_string,
                    num_samples, seq_length, seed, skip_warmup,
                    *,
-                   data_cache_path=None):
+                   data_cache_path=None,
+                   use_seq_len_plus_one_tokens=True):
     """
     Build dataset. This method is called when individual
     train, valid, test datasets are provided
@@ -220,7 +233,7 @@ def _build_dataset(dataset_name, data_prefix, data_impl, splits_string,
 
     dataset = GPTDataset(dataset_name, data_prefix, documents, indexed_dataset,
                          splits_string, num_samples, seq_length, seed,
-                         data_cache_path=data_cache_path)
+                         data_cache_path=data_cache_path, use_seq_len_plus_one_tokens=use_seq_len_plus_one_tokens)
 
     return dataset
 
@@ -246,11 +259,16 @@ class GPTDataset(torch.utils.data.Dataset):
     def __init__(self, name, data_prefix, documents, indexed_dataset,
                  splits_string, num_samples, seq_length, seed,
                  return_doc_ids=False, *,
-                 data_cache_path=None):
+                 data_cache_path=None,
+                 use_seq_len_plus_one_tokens):
 
         self.name = name
         self.indexed_dataset = indexed_dataset
         self.return_doc_ids = return_doc_ids
+        self.seq_length = seq_length
+        self.add_extra_token = 0
+        if use_seq_len_plus_one_tokens:
+            self.add_extra_token = 1
 
         # Checks
         assert np.min(documents) >= 0
@@ -261,7 +279,7 @@ class GPTDataset(torch.utils.data.Dataset):
             _build_index_mappings(self.name, data_prefix,
                                   documents, self.indexed_dataset.sizes,
                                   splits_string, num_samples, seq_length, seed,
-                                  data_cache_path=data_cache_path)
+                                  data_cache_path=data_cache_path, add_extra_token=self.add_extra_token)
 
 
     def __len__(self):
@@ -271,6 +289,8 @@ class GPTDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         args = get_args()
+        dummy_sample = idx < 0
+        idx = np.abs(idx)
         orig_idx = idx
         # Get the shuffled index.
         idx = self.shuffle_idx[idx]
@@ -285,7 +305,7 @@ class GPTDataset(torch.utils.data.Dataset):
             doc_ids.append(self.doc_idx[doc_index_f])
             sample = self.indexed_dataset.get(self.doc_idx[doc_index_f],
                                               offset=offset_f,
-                                              length=offset_l - offset_f + 1)
+                                              length=offset_l - offset_f + self.add_extra_token)
         else:
             # Otherwise, get the rest of the initial document.
             doc_ids.append(self.doc_idx[doc_index_f])
@@ -299,7 +319,7 @@ class GPTDataset(torch.utils.data.Dataset):
             doc_ids.append(self.doc_idx[doc_index_l])
             sample_list.append(self.indexed_dataset.get(
                 self.doc_idx[doc_index_l],
-                length=offset_l + 1))
+                length=offset_l + self.add_extra_token))
             sample = np.concatenate(sample_list)
 
         text_name = 'text'
@@ -315,13 +335,26 @@ class GPTDataset(torch.utils.data.Dataset):
         if args.use_dataset_only:
             sample_dict.update({'labels': np.array(sample, dtype=np.int64)})
 
-        return sample_dict
+        if len(sample) != (self.seq_length + self.add_extra_token):
+            sample = np.array(sample, dtype=np.int64)
+            sample = np.pad(sample, (0, self.seq_length + self.add_extra_token - len(sample)), mode='constant', constant_values=-1)
 
+        if args.return_data_index:
+            return {'text': np.array(sample, dtype=np.int64),
+                    'index': np.array([orig_idx], dtype=np.int64)}
+        elif self.return_doc_ids: # for retro preprocessing
+            return {'text': np.array(sample, dtype=np.int64),
+                    'doc_ids': np.array(doc_ids, dtype=np.int64)}
+        else:
+            return {'text': np.array(sample, dtype=np.int64),
+                    'dummy_sample': np.array(int(dummy_sample), dtype=np.int64)}
+
+        return sample_dict
 
 def _build_index_mappings(name, data_prefix, documents, sizes,
                           splits_string, num_samples, seq_length, seed,
                           *,
-                          data_cache_path):
+                          data_cache_path, add_extra_token):
     """Build doc-idx, sample-idx, and shuffle-idx.
     doc-idx: is an array (ordered) of documents to be used in training.
     sample-idx: is the start document index and document offset for each
@@ -331,7 +364,11 @@ def _build_index_mappings(name, data_prefix, documents, sizes,
     args = get_args()
     # Number of tokens in each epoch and number of required epochs.
     tokens_per_epoch = _num_tokens(documents, sizes)
-    num_epochs = _num_epochs(tokens_per_epoch, seq_length, num_samples)
+    num_epochs = _num_epochs(tokens_per_epoch, seq_length, num_samples, add_extra_token)
+    if num_samples < 0:
+        print_num_samples = tokens_per_epoch // seq_length
+    else:
+        print_num_samples = num_samples
     if args.train_data_exact_num_epochs is not None and name == 'train':
         num_epochs = args.train_data_exact_num_epochs
 
@@ -342,7 +379,7 @@ def _build_index_mappings(name, data_prefix, documents, sizes,
     desc = "GPT Dataset\n\n"
     desc += f"Data prefix {data_prefix}\n"
     desc += f"Dataset name {name}\n"
-    desc += f"Number of samples {num_samples}\n"
+    desc += f"Number of samples {print_num_samples}\n"
     desc += f"Number of epochs {num_epochs}\n"
     desc += f"Sequence length {seq_length}\n"
     desc += f"Random seed {seed}\n"
@@ -405,13 +442,14 @@ def _build_index_mappings(name, data_prefix, documents, sizes,
 
         else:
             # Get the number of samples for the last epoch
+            assert num_samples >= 0, 'number of samples should be non-negative'
             num_samples_from_epochs_minus_one = (
-                (num_epochs - 1) * tokens_per_epoch - 1) // seq_length
+                (num_epochs - 1) * tokens_per_epoch - add_extra_token) // seq_length
             last_epoch_num_samples = num_samples - \
                                      num_samples_from_epochs_minus_one
             assert last_epoch_num_samples >= 0, \
                 'last epoch number of samples should be non-negative.'
-            num_samples_per_epoch = (tokens_per_epoch - 1) // seq_length
+            num_samples_per_epoch = (tokens_per_epoch - add_extra_token) // seq_length
             assert last_epoch_num_samples <= (num_samples_per_epoch + 1), \
                 'last epoch number of samples exceeded max value.'
             # If we have less than 80% of the samples for the last epoch,
@@ -454,7 +492,8 @@ def _build_index_mappings(name, data_prefix, documents, sizes,
             assert doc_idx.dtype == np.int32
             assert sizes.dtype == np.int32
             sample_idx = helpers.build_sample_idx(sizes, doc_idx, seq_length,
-                                                  num_epochs, tokens_per_epoch)
+                                                  num_epochs, tokens_per_epoch,
+                                                  num_samples < 0, add_extra_token)
             np.save(idx_path['sample'], sample_idx, allow_pickle=True)
             print_rank_0(' > elasped time to build and save sample-idx mapping '
                          '(seconds): {:4f}'.format(time.time() - start_time))
@@ -514,7 +553,7 @@ def _num_tokens(documents, sizes):
     return np.sum(sizes[documents])
 
 
-def _num_epochs(tokens_per_epoch, seq_length, num_samples):
+def _num_epochs(tokens_per_epoch, seq_length, num_samples, add_extra_token):
     """Based on number of samples and sequence lenght, calculate how many
     epochs will be needed."""
     num_epochs = 0
@@ -525,19 +564,23 @@ def _num_epochs(tokens_per_epoch, seq_length, num_samples):
         # -1 is because we need to retrieve seq_length + 1 token each time
         # but the last token will overlap with the first token of the next
         # sample except for the last sample.
-        if ((total_tokens - 1) // seq_length) >= num_samples:
+        if ((total_tokens - add_extra_token) // seq_length) >= num_samples:
             return num_epochs
 
 
 def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch):
     """Build an array with length = number-of-epochs * number-of-dcuments.
     Each index is mapped to a corresponding document."""
+    args = get_args()
     if not separate_last_epoch or num_epochs == 1:
         doc_idx = np.mgrid[0:num_epochs, 0:len(documents)][1]
         doc_idx[:] = documents
         doc_idx = doc_idx.reshape(-1)
         doc_idx = doc_idx.astype(np.int32)
-        np_rng.shuffle(doc_idx)
+        if args.disable_doc_shuffling:
+            print_rank_0(' > Disabled document shuffling...')
+        else:
+            np_rng.shuffle(doc_idx)
         return doc_idx
 
     doc_idx_first = _build_doc_idx(documents, num_epochs-1, np_rng, False)
@@ -546,14 +589,19 @@ def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch):
 
 
 def _build_sample_idx(sizes, doc_idx, seq_length,
-                      num_epochs, tokens_per_epoch):
+                      num_epochs, tokens_per_epoch,
+                      keep_last_sequence, add_extra_token):
     """Sample index mapping is a 2D array with sizes
     [number-of-samples + 1, 2] where [..., 0] contains
     the index into `doc_idx` and [..., 1] is the
     starting offset in that document."""
 
     # Total number of samples. For -1 see comments in `_num_epochs`.
-    num_samples = (num_epochs * tokens_per_epoch - 1) // seq_length
+    if keep_last_sequence:
+        import math
+        num_samples = math.ceil((num_epochs * tokens_per_epoch - add_extra_token) / seq_length)
+    else:
+        num_samples = (num_epochs * tokens_per_epoch - add_extra_token) // seq_length
     sample_idx = np.zeros([num_samples + 1, 2], dtype=np.int32)
 
     # Index into sample_idx.
@@ -568,7 +616,7 @@ def _build_sample_idx(sizes, doc_idx, seq_length,
     sample_index += 1
     while sample_index <= num_samples:
         # Start with a fresh sequence.
-        remaining_seq_length = seq_length + 1
+        remaining_seq_length = seq_length + add_extra_token
         while remaining_seq_length != 0:
             # Get the document length.
             doc_id = doc_idx[doc_idx_index]
@@ -580,10 +628,14 @@ def _build_sample_idx(sizes, doc_idx, seq_length,
             # Note that -1 here is for the same reason we have -1 in
             # `_num_epochs` calculations.
             if remaining_seq_length <= 0:
-                doc_offset += (remaining_seq_length + doc_length - 1)
+                doc_offset += (remaining_seq_length + doc_length - add_extra_token)
                 remaining_seq_length = 0
             else:
                 # Otherwise, start from the begining of the next document.
+                if doc_idx_index == (len(doc_idx) - 1):
+                    assert sample_index == num_samples, F"sample_index={sample_index} and num_samples={num_samples} should be the same"
+                    doc_offset = sizes[doc_idx[doc_idx_index]] - add_extra_token
+                    break
                 doc_idx_index += 1
                 doc_offset = 0
         # Record the sequence.

@@ -6,15 +6,23 @@ The folder also contains scripts for inspecting checkpoint files and folders, wh
 
 Here are the list and details of checkpoint conversions provided by the available scripts:
 
-1. [Megatron-DeepSpeed to Megatron-LM](#Megatron-DeepSpeed-to-Megatron)
-1. [Megatron-DeepSpeed to HF Transformers](#Megatron-DeepSpeed-to-HF-Transformers)
+1. [Megatron-DeepSpeed to Megatron-LM](#megatron-deepspeed-to-megatron)
+2. [Megatron-DeepSpeed to HF Transformers](#megatron-deepspeed-to-hf-transformers)
+3. [Megatron-DeepSpeed to universal then to HF Transformers](#megatron-deepspeed-to-universal-then-to-hf-transformers)
 
 
 ## Megatron-DeepSpeed to Megatron
 
 The (current implementation of the) converter extracts args and model parameters from a DeepSpeed checkpoint (i.e., excludes other training states such as optimizer, scheduler, etc) and convert into a Megatron-LM checkpoint similarly containing only model parameters. The converter also provides a best-effort attempt to reshape the tensor-parallelism and pipeline parallelism degrees for the checkpoint. The resulting Megatron-LM checkpoint could be loaded into Megatron-LM framework for finetuning or inference. Tensor parallelism (TP) and pipeline parallelism (PP) are supported in the sense that the generated Megatron-LM checkpoint (folders and files) will be of the same TP and PP of the training that created the input DeepSpeed checkpoint. The entry point of the converter is `deepspeed_to_megatron.py`, which as the following usage:
 ```bash
-python tools/convert_checkpoint/deepspeed_to_megatron.py -h
+export DEEPSPEED_ROOT=/path/to/deepspeed
+export MEGATRON_DEEPSPEED_ROOT=/path/to/Megatron-DeepSpeed
+export PYTHONPATH=$MEGATRON_DEEPSPEED_ROOT:$PYTHONPATH
+
+pip install -r $MEGATRON_DEEPSPEED_ROOT/megatron/core/requirements.txt
+pip install $DEEPSPEED_ROOT
+
+python $MEGATRON_DEEPSPEED_ROOT/tools/convert_checkpoint/deepspeed_to_megatron.py -h
 Convert DeepSpeed Checkpoint to Megatron Checkpoint
 usage: deepspeed_to_megatron.py [-h] [--input_folder INPUT_FOLDER]
                                 [--output_folder OUTPUT_FOLDER]
@@ -76,3 +84,16 @@ cd /hf/transformers
 python src/transformers/models/megatron_gpt2/convert_megatron_gpt2_checkpoint.py \
 /path/to/Megatron/checkpoint/iter_0097500/mp_rank_00/model_optim_rng.pt
 ```
+
+## Megatron-DeepSpeed to Universal then to HF Transformers
+
+The conversion is done in two steps, Megatron-DeepSpeed to Universal and then Universal to HF Transformers:
+
+```bash
+# 1. Megatron-DeepSpeed to Universal
+HL_LATEST_CHECKPOINT=/path/to/checkpoints/global_step*/ $MEGATRON_DEEPSPEED_ROOT/scripts/convert_ds_to_universal.sh
+
+# 2. Universal to HF Transformers
+python $MEGATRON_DEEPSPEED_ROOT/tools/convert_checkpoint/mds_universal_to_huggingface.py --output-dir /path/to/output/dir --hf-out-format safetensors --universal-dir /path/to/universal/dir/ --model-type llama --config $MEGATRON_DEEPSPEED_ROOT/tools/convert_checkpoint/json/mds_to_hf_llama_7b.json
+'''
+Note: Validated on LLaMA 2 - 7B and 70B models.

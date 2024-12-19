@@ -1,15 +1,24 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
-from commons import print_separator
-from commons import initialize_distributed
-import mpu
+from .commons import print_separator
+from .commons import initialize_distributed
+from megatron.core import mpu
+import os
+import pytest
 import torch
 import sys
 sys.path.append("../..")
 
 
+@pytest.fixture
+def tensor_model_parallel_size():
+    return int(os.getenv("WORLD_SIZE", '1'))
+
+
 def test_initialize_model_parallel(tensor_model_parallel_size):
 
+    initialize_distributed()
     if torch.distributed.get_rank() == 0:
         print('> testing initialize_model_parallel with size {} ...'.format(
             tensor_model_parallel_size))
@@ -46,12 +55,13 @@ def test_initialize_model_parallel(tensor_model_parallel_size):
         print('>> passed the test :-)')
 
 
-def test_get_tensor_model_parallel_src_rank(tensor_model_parallel_size_):
+def test_get_tensor_model_parallel_src_rank(tensor_model_parallel_size):
 
+    initialize_distributed()
     if torch.distributed.get_rank() == 0:
         print('> testing get_tensor_model_parallel_src_rank with size {} ...'.format(
-            tensor_model_parallel_size_))
-    tensor_model_parallel_size = min(tensor_model_parallel_size_,
+            tensor_model_parallel_size))
+    tensor_model_parallel_size = min(tensor_model_parallel_size,
                               torch.distributed.get_world_size())
     assert not mpu.model_parallel_is_initialized()
     mpu.initialize_model_parallel(tensor_model_parallel_size)

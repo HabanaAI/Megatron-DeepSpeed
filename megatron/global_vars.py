@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Megatron global variables."""
@@ -14,6 +15,7 @@ from .timers import Timers
 _GLOBAL_ARGS = None
 _GLOBAL_RETRO_ARGS = None
 _GLOBAL_NUM_MICROBATCHES_CALCULATOR = None
+_GLOBAL_NUM_EVAL_MICROBATCHES_CALCULATOR = None
 _GLOBAL_TOKENIZER = None
 _GLOBAL_TENSORBOARD_WRITER = None
 _GLOBAL_ADLR_AUTORESUME = None
@@ -42,6 +44,19 @@ def get_current_global_batch_size():
 def update_num_microbatches(consumed_samples, consistency_check=True):
     _GLOBAL_NUM_MICROBATCHES_CALCULATOR.update(consumed_samples,
                                                consistency_check)
+
+
+def get_num_eval_microbatches():
+    return _GLOBAL_NUM_EVAL_MICROBATCHES_CALCULATOR.get()
+
+
+# When using different micro batch size for training and evaluation/validation
+# we have different number of micro batches.
+def get_num_microbatches_by_mode(is_training):
+    if is_training:
+        return get_num_microbatches()
+    else:
+        return get_num_eval_microbatches()
 
 
 def get_tokenizer():
@@ -111,11 +126,16 @@ def set_retro_args(retro_args):
 def _build_num_microbatches_calculator(args):
 
     global _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+    global _GLOBAL_NUM_EVAL_MICROBATCHES_CALCULATOR
     _ensure_var_is_not_initialized(_GLOBAL_NUM_MICROBATCHES_CALCULATOR,
                                    'num microbatches calculator')
+    _ensure_var_is_not_initialized(_GLOBAL_NUM_EVAL_MICROBATCHES_CALCULATOR,
+                                   'num eval microbatches calculator')
 
     _GLOBAL_NUM_MICROBATCHES_CALCULATOR = build_num_microbatches_calculator(
-        args)
+        args, args.micro_batch_size)
+    _GLOBAL_NUM_EVAL_MICROBATCHES_CALCULATOR = build_num_microbatches_calculator(
+        args, args.eval_micro_batch_size)
 
 
 def _build_tokenizer(args):

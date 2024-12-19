@@ -1,3 +1,5 @@
+# Copyright (C) 2024 Intel Corporation
+
 import os
 from typing import Dict
 import torch 
@@ -42,8 +44,8 @@ class DeepSpeedCheckpoint(object):
         self.tp_degree = self.original_tp_degree if tp_degree is None else tp_degree
         self.pp_degree = self.original_pp_degree if pp_degree is None else pp_degree
         self.global_state = {}
-    
-        self._sanity_check()
+
+        # self._sanity_check()
         self.pp_to_transformer_map = self._build_pp_transformer_map()
         self.transformer_file_map = self._build_transformer_file_map()
         if not self.no_pp:
@@ -188,7 +190,7 @@ class DeepSpeedCheckpoint(object):
     def _merge_state_dicts(self, sd_list):
         merged_sd = {}
         for key in sd_list[0].keys():
-            if not key in SEQUENTIAL_LAYERS:
+            if not key in SEQUENTIAL_LAYERS and "_extra_state" not in key:
                 cat_dim = LAYER_CONCAT_DIM.get(key, 0)
                 merged_sd[key] = torch.cat([sd[key] for sd in sd_list], dim=cat_dim)
             else:

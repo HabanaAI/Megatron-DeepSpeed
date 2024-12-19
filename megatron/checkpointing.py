@@ -1,3 +1,4 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 """Input/output checkpointing."""
@@ -12,6 +13,7 @@ import torch
 from megatron import update_num_microbatches, get_tokenizer
 from megatron.core import mpu, tensor_parallel
 from .global_vars import get_args
+from tools import verify_checkpoint
 from .utils import (unwrap_model,
                     print_rank_0,
                     is_rank_0)
@@ -67,7 +69,8 @@ def check_checkpoint_args(checkpoint_args):
     _compare('num_key_value_heads')
     _compare('add_position_embedding', default=True)
     if args.vocab_file:
-        _compare('max_position_embeddings')
+        if not args.use_alibi_position_embeddings:
+            _compare('max_position_embeddings')
         if not args.universal_checkpoint:
             _compare('make_vocab_size_divisible_by')
             _compare('padded_vocab_size')
@@ -314,6 +317,18 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler):
 
     # And update the latest iteration
     if is_rank_0():
+        if args.verify_checkpoint:
+            ckpt_folder = os.path.join(args.save, f"global_step{iteration}")
+            prev_iter = iteration - args.save_interval
+            ckpt_ok = verify_checkpoint(ckpt_folder,
+                                        args.verify_checkpoint_model_type)
+            if not ckpt_ok:
+                # Fix latest file to previous valid ckpt
+                with open(os.path.join(args.save, 'latest'), 'w') as fd:
+                    fd.write(f"global_step{prev_iter}")
+                raise RuntimeError(f"verify_checkpoint failed!!! {ckpt_folder}")
+            else:
+                print_rank_0(f"successfully passed ckpt validation: {ckpt_folder}")
         tracker_filename = get_checkpoint_tracker_filename(args.save)
         with open(tracker_filename, 'w') as f:
             f.write(str(iteration))
@@ -511,6 +526,7 @@ def load_args_from_checkpoint(args, load_arg='load'):
     _set_arg('max_position_embeddings')
     _set_arg('add_position_embedding', force=True)
     _set_arg('use_rotary_position_embeddings', force=True)
+    _set_arg('use_alibi_position_embeddings', force=True)
     _set_arg('rotary_percent', force=True)
     _set_arg('add_bias_linear', force=True)
     _set_arg('swiglu', force=True)

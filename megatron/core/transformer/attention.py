@@ -1,6 +1,8 @@
+# Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 from abc import ABC, abstractmethod
+from deepspeed.accelerator import get_accelerator
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
 import torch
@@ -13,7 +15,11 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.enums import AttnType, AttnMaskType
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.custom_layers.transformer_engine import \
-        TECoreAttention, TEColumnParallelLinear, TERowParallelLinear
+        TEColumnParallelLinear, TERowParallelLinear
+
+if get_accelerator().device_name() == "cuda":
+    from megatron.core.transformer.custom_layers.transformer_engine import \
+        TECoreAttention
 
 class Attention(MegatronModule, ABC):
     """Attention layer abstract class.

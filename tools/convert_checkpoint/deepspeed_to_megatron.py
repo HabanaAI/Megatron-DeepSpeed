@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
+# Copyright (C) 2024 Intel Corporation
+
 import argparse
 import os
 import torch
 from collections import OrderedDict
-from .deepspeed_checkpoint import ARGS_KEY, DeepSpeedCheckpoint
+from tools.convert_checkpoint.deepspeed_checkpoint import ARGS_KEY, DeepSpeedCheckpoint
 
 MODEL_KEY = 'model'
 ARGS_KEY = 'args'
@@ -145,6 +147,7 @@ def main():
         for j in range(0, ds_checkpoint.pp_degree):
             sd = _create_rank_checkpoint(ds_checkpoint, i, j, args.for_release)
             _save_checkpoint(checkpoint_paths[i][j], sd)
+    print("DONE!")
 
 if __name__ == "__main__":
     main()
